@@ -104,6 +104,12 @@ table.jt td{padding:8px 10px;border-bottom:1px solid #eef0f5;vertical-align:midd
       <span class="stt" id="auto-stt"></span>
     </div>
     <div class="mut" id="auto-last" style="margin-top:6px"></div>
+    <div class="row" style="align-items:center;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+      <button class="btn" id="btn-discover">Quét ticket mới ngay</button>
+      <span class="mut" style="font-size:12px">Gọi export VOMS (4 ngày gần nhất), tự thêm ticket mới — không đụng ticket khác.</span>
+      <span class="stt" id="discover-stt"></span>
+    </div>
+    <div class="mut" id="discover-last" style="margin-top:6px"></div>
   </div>
 
   <div class="card">
@@ -224,7 +230,16 @@ function renderAuto(m){
   $('#auto-on').checked=!!(m.auto&&m.auto.enabled);
   if(m.auto&&document.activeElement!==$('#auto-int'))$('#auto-int').value=m.auto.interval_min;
   $('#auto-last').textContent=(m.auto&&m.auto.last_run)?('Lần tự chạy gần nhất: '+m.auto.last_run+' - '+(m.auto.last_result||'')):'';
+  const d=m.discover||{};
+  $('#btn-discover').disabled=!!d.running;
+  if(d.running)setStt($('#discover-stt'),'đang quét...','');
+  else setStt($('#discover-stt'),'','');
+  $('#discover-last').textContent=d.last_run?('Lần quét gần nhất: '+d.last_run+' - '+(d.last_result||'')):'';
 }
+$('#btn-discover').onclick=async()=>{
+  try{await api('/api/voms/discover',{method:'POST'});setStt($('#discover-stt'),'đang quét...','');tick()}
+  catch(e){setStt($('#discover-stt'),'lỗi: '+e.message,'err')}
+};
 // Bảng theo dõi đồng bộ: VOMS / CCTS / tự động — ai đang chạy, tới đâu.
 // Nhiều người có thể chạy cùng lúc nên mỗi "kind" giờ là 1 danh sách job (job_id riêng),
 // không còn 1 job duy nhất — mỗi job 1 dòng, job mới nhất lên trên.

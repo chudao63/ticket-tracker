@@ -429,7 +429,7 @@ VOMS_EXPORT_HISTORY_API = "https://voms-api.vgreen.net/api/v1/export-history"
 # cần tính lại việc merge theo lô để không khoá DB quá lâu 1 lượt.
 DISCOVER_DAYS_BACK = 4
 DISCOVER_INTERVAL_MIN = 30  # thưa hơn nhịp refresh status vì export là thao tác nặng hơn phía VOMS
-DISCOVER_STATE = {"last_run": "", "last_result": ""}
+DISCOVER_STATE = {"last_run": "", "last_result": "", "running": False}
 VOMS_STATUS_VI = {
     "pending": "Chờ xử lý", "assigned": "Đã phân công", "accepted": "KTV đã nhận",
     "in_progress": "Đang xử lý", "processing": "Đang xử lý", "completed": "Hoàn công",
@@ -843,19 +843,13 @@ def _auto_loop():
             # Phát hiện ticket mới (export VOMS theo khoảng ngày) — nhịp riêng,
             # thưa hơn refresh status, không phụ thuộc JOBS/_any_running vì đây
             # chỉ là 1 lượt gọi+merge nhanh, không phải job lấy status hàng loạt.
+            # Dùng chung _run_discover_now với nút bấm tay -> không bao giờ chồng lượt.
             due_discover = True
             if DISCOVER_STATE["last_run"]:
                 dt = datetime.strptime(DISCOVER_STATE["last_run"], "%Y-%m-%d %H:%M:%S")
                 due_discover = (datetime.now() - dt).total_seconds() >= DISCOVER_INTERVAL_MIN * 60
             if due_discover:
-                DISCOVER_STATE["last_run"] = now_str()
-                try:
-                    res_d = _voms_discover_new(CREDS["voms"]["token"], CREDS["voms"]["tenant"])
-                    DISCOVER_STATE["last_result"] = (f"quét {res_d['scanned']}, mới {res_d['new']}"
-                                                     + (f", chưa rõ tỉnh {sum(res_d['unmapped'].values())}"
-                                                        if res_d["unmapped"] else ""))
-                except Exception as e:
-                    DISCOVER_STATE["last_result"] = "lỗi: " + str(e)[:200]
+                _run_discover_now(by="tự động")
             # Tự động chỉ bỏ qua nếu đã có job "tự động"/thủ công cùng loại đang chạy
             # (tránh tự bắn trùng job toàn bộ) — không liên quan tới người dùng
             # đang bấm "cập nhật phần của tôi", các job đó chạy song song bình thường.
@@ -983,7 +977,7 @@ def meta():
     }
     return {"cses": ALL_CSES, "asps": ASPS, "total": total, "by_asp": by_asp,
             "voms_updated": vt, "ccts_updated": ct,
-            "jobs": jobs_view, "auto": AUTO, "health": HEALTH,
+            "jobs": jobs_view, "auto": AUTO, "health": HEALTH, "discover": DISCOVER_STATE,
             "admin_locked": bool(ADMIN_KEY)}
 
 
@@ -1063,7 +1057,7 @@ def _merge_new_tickets(content):
     sheet_name, _id_col, rows, unmapped = _parse_master_bytes(content)
     ts = now_str()
     new_count = 0
-    with db() as c:
+    with DB_WRITE_LOCK, db() as c:
         existing = {r["rc_key"] for r in c.execute("SELECT rc_key FROM tickets")}
         for k, rc, pname, pcode, asp, cses, station in rows:
             if k not in existing:
@@ -1090,6 +1084,27 @@ def _voms_discover_new(token, tenant, days_back=DISCOVER_DAYS_BACK):
     r = requests.get(link, timeout=60)
     r.raise_for_status()
     return _merge_new_tickets(r.content)
+
+
+def _run_discover_now(by="tự động"):
+    """Chạy _voms_discover_new nền + cập nhật DISCOVER_STATE. Dùng chung cho
+    nút bấm tay và auto-loop -> không bao giờ chạy chồng 2 lượt cùng lúc."""
+    if DISCOVER_STATE["running"]:
+        return False
+
+    def worker():
+        DISCOVER_STATE["running"] = True
+        DISCOVER_STATE["last_run"] = now_str()
+        try:
+            res = _voms_discover_new(CREDS["voms"]["token"], CREDS["voms"]["tenant"])
+            extra = f", chưa rõ tỉnh {sum(res['unmapped'].values())}" if res["unmapped"] else ""
+            DISCOVER_STATE["last_result"] = f"({by}) quét {res['scanned']}, mới {res['new']}{extra}"
+        except Exception as e:
+            DISCOVER_STATE["last_result"] = f"({by}) lỗi: " + str(e)[:200]
+        finally:
+            DISCOVER_STATE["running"] = False
+    threading.Thread(target=worker, daemon=True).start()
+    return True
 
 
 @app.get("/api/tickets")
@@ -1171,6 +1186,15 @@ def voms_fetch(body: VomsFetchIn):
     job_id = start_job("voms", lambda jid: job_voms(jid, token, tenant, workers=body.workers, only_missing=body.only_missing),
                        by="quản trị", scope=("phần còn thiếu" if body.only_missing else "toàn bộ"))
     return {"started": True, "job_id": job_id}
+
+
+@app.post("/api/voms/discover", dependencies=[Depends(require_admin)])
+def voms_discover():
+    if not CREDS["voms"]["token"]:
+        raise HTTPException(400, "Chưa có token VOMS trên hệ thống — nhờ quản trị lưu token trước.")
+    if not _run_discover_now(by="quản trị"):
+        raise HTTPException(409, "Đang có lượt phát hiện ticket mới chạy, đợi chút rồi thử lại.")
+    return {"started": True}
 
 
 @app.post("/api/ccts/fetch", dependencies=[Depends(require_admin)])
