@@ -438,6 +438,11 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_notes_rc ON notes(rc_key);
         """)
+        # Migration an toàn: thêm cột voms_assigned nếu DB đã tồn tại từ trước
+        # bản này (CREATE TABLE IF NOT EXISTS không tự thêm cột cho bảng đã có).
+        cols = {row["name"] for row in c.execute("PRAGMA table_info(tickets)")}
+        if "voms_assigned" not in cols:
+            c.execute("ALTER TABLE tickets ADD COLUMN voms_assigned TEXT DEFAULT ''")
 
 
 # Toàn bộ giờ hiển thị/tính hạn trong app đều tính theo giờ Việt Nam (UTC+7 cố
@@ -449,6 +454,22 @@ VN_TZ = timezone(timedelta(hours=7))
 
 def vn_now():
     return datetime.now(VN_TZ).replace(tzinfo=None)
+
+
+def utc_iso_to_vn_str(iso_s):
+    """VOMS trả các mốc thời gian (assignedAt, createdAt...) dạng ISO UTC có hậu
+    tố Z, vd '2026-07-30T16:08:40.000Z'. Chuyển sang giờ VN, cùng định dạng
+    "%Y-%m-%d %H:%M:%S" đang dùng thống nhất trong toàn app."""
+    if not iso_s:
+        return ""
+    try:
+        s = str(iso_s).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(VN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
 
 
 def now_str():
@@ -545,7 +566,7 @@ CCTS_ORIGIN = "https://console.cnpowercore.com"
 CCTS_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 CCTS_TSV_HEADERS = ["External Ticket ID (query)", "Matched Ext ID", "Ticket Status",
-                    "Create Time", "Rows Found", "Matched?", "Note"]
+                    "Occurrence Time", "Rows Found", "Matched?", "Note"]
 
 
 def ccts_headers(cookie):
@@ -575,7 +596,7 @@ def parse_ccts_tsv(text):
         if is_header(r):
             continue
         r = (r + [""] * len(CCTS_TSV_HEADERS))[:len(CCTS_TSV_HEADERS)]
-        out.append({"query": r[0].strip(), "status": r[2].strip(), "create_time": r[3].strip()})
+        out.append({"query": r[0].strip(), "status": r[2].strip(), "occurrence_time": r[3].strip()})
     return out
 
 
@@ -729,7 +750,7 @@ def _run_pool(kind, job_id, rcs, worker, write, workers, only_missing):
 def _voms_fetch_one(rc, headers):
     with API_SEM["voms"]:
         r, err = voms_get_one(_sess(), rc, headers)
-    out = {"rc": rc, "status": "", "raw": "", "station": "", "ok": False, "fatal": None}
+    out = {"rc": rc, "status": "", "raw": "", "station": "", "assigned": "", "ok": False, "fatal": None}
     if r is None:
         out["status"] = "L\u1ed6I: " + (err or "m\u1ea1ng")
     elif r.status_code in (401, 403):
@@ -748,6 +769,9 @@ def _voms_fetch_one(rc, headers):
             out["status"] = VOMS_STATUS_VI.get(out["raw"], out["raw"] or "(tr\u1ed1ng)")
             stn = it.get("station") or {}
             out["station"] = stn.get("stationCode", "") if isinstance(stn, dict) else ""
+            # H\u1ea1n 48h t\u00ednh t\u1eeb l\u00fac VOMS g\u00e1n KTV (assignedAt) \u2014 kh\u00f4ng d\u00f9ng ccts_create
+            # n\u1eefa v\u00ec b\u00ean CCTS ghi nh\u1eadn kh\u00f4ng \u1ed5n \u0111\u1ecbnh cho m\u1ed9t s\u1ed1 ticket.
+            out["assigned"] = utc_iso_to_vn_str(it.get("assignedAt"))
             out["ok"] = True
         else:
             out["status"] = "Kh\u00f4ng c\u00f3 d\u1eef li\u1ec7u"
@@ -765,8 +789,10 @@ def job_voms(job_id, token, tenant, workers=6, only_missing=False, cse=None, ski
 
         def write(res):
             with DB_WRITE_LOCK, db() as c:
-                c.execute("UPDATE tickets SET voms_status=?, voms_raw=?, voms_station=?, voms_time=? WHERE rc_key=?",
-                          (res["status"], res["raw"], res["station"], now_str(), norm_key(res["rc"])))
+                c.execute("""UPDATE tickets SET voms_status=?, voms_raw=?, voms_station=?, voms_time=?,
+                             voms_assigned=COALESCE(NULLIF(?, ''), voms_assigned) WHERE rc_key=?""",
+                          (res["status"], res["raw"], res["station"], now_str(),
+                           res.get("assigned", ""), norm_key(res["rc"])))
         _run_pool("voms", job_id, rcs, lambda rc: _voms_fetch_one(rc, headers), write, workers, only_missing)
     except Exception as e:
         st["error"] = str(e)[:300]
@@ -803,7 +829,9 @@ def _ccts_fetch_one(rc, headers, token):
         hit = next((it for it in items if norm_key(it.get("thirdTicketId", "")) == norm_key(rc)), None)
         if hit:
             out["status"] = hit.get("cctsTicketStatus", "") or "(tr\u1ed1ng)"
-            out["create"] = hit.get("createTime", "")
+            # H\u1ea1n 48h t\u00ednh t\u1eeb l\u00fac S\u1ef0 C\u1ed0 X\u1ea2Y RA (occurrenceTime), kh\u00f4ng ph\u1ea3i l\u00fac
+            # ticket CCTS \u0111\u01b0\u1ee3c t\u1ea1o (createTime) \u2014 2 m\u1ed1c c\u00f3 th\u1ec3 l\u1ec7ch nhi\u1ec1u gi\u1edd.
+            out["create"] = hit.get("occurrenceTime") or hit.get("createTime", "")
             out["ok"] = True
         else:
             out["status"] = "Kh\u00f4ng kh\u1edbp m\u00e3" if items else "Kh\u00f4ng c\u00f3 d\u1eef li\u1ec7u"
@@ -1051,12 +1079,17 @@ def _parse_master_bytes(content):
             continue
         seen.add(k)
         prov_raw = r[prov_col]
+        # Ô tỉnh trống trong Excel -> pandas đọc thành NaN (float); NaN lại "truthy"
+        # trong Python nên "prov_raw or ..." không bắt được, str(NaN) ra chữ "nan"
+        # hiện lên UI. Phải tự kiểm tra NaN/None trước khi ghép chuỗi.
+        prov_str = "" if (prov_raw is None or (isinstance(prov_raw, float) and pd.isna(prov_raw))) \
+            else str(prov_raw).strip()
         station = str(r[station_col]).strip() if station_col is not None and not pd.isna(r[station_col]) else ""
         pcode = province_code_of(prov_raw, station)
         asp = ASP_BY_CODE.get(pcode, "")
-        pname, cses = PROVINCE_DATA.get(pcode, (str(prov_raw or "").strip(), []))
+        pname, cses = PROVINCE_DATA.get(pcode, (prov_str, []))
         if not pcode:
-            key = str(prov_raw or "(trống)").strip() or "(trống)"
+            key = prov_str or "(trống)"
             unmapped[key] = unmapped.get(key, 0) + 1
         rows.append((k, rc, pname, pcode, asp, json.dumps(cses, ensure_ascii=False), station))
     if not rows:
@@ -1099,11 +1132,21 @@ def _merge_new_tickets(content):
         for k, rc, pname, pcode, asp, cses, station in rows:
             if k not in existing:
                 new_count += 1
+            # File export theo khoảng ngày của VOMS đôi khi trả về Tỉnh/Mã trạm TRỐNG
+            # cho ticket vẫn còn hợp lệ (khác export tổng tải tay, luôn đầy đủ).
+            # Vì đây chỉ là merge bổ sung (không phải nguồn thay thế toàn bộ như
+            # import tay), TUYỆT ĐỐI không ghi đè dữ liệu tốt đã có bằng giá trị
+            # trống — giữ nguyên province/pcode/asp/station/cses cũ nếu file mới
+            # không có gì để cung cấp.
             c.execute("""INSERT INTO tickets(rc_key, rc, province, pcode, asp, cses, station, active, updated_at)
                          VALUES(?,?,?,?,?,?,?,1,?)
                          ON CONFLICT(rc_key) DO UPDATE SET
-                           rc=excluded.rc, province=excluded.province, pcode=excluded.pcode,
-                           asp=excluded.asp, cses=excluded.cses, station=excluded.station,
+                           rc=excluded.rc,
+                           province=COALESCE(NULLIF(excluded.province, ''), tickets.province),
+                           pcode=COALESCE(NULLIF(excluded.pcode, ''), tickets.pcode),
+                           asp=COALESCE(NULLIF(excluded.asp, ''), tickets.asp),
+                           station=COALESCE(NULLIF(excluded.station, ''), tickets.station),
+                           cses=CASE WHEN excluded.cses NOT IN ('', '[]') THEN excluded.cses ELSE tickets.cses END,
                            active=1, updated_at=excluded.updated_at""",
                       (k, rc, pname, pcode, asp, cses, station, ts))
     return {"sheet": sheet_name, "scanned": len(rows), "new": new_count, "unmapped": unmapped}
@@ -1144,15 +1187,71 @@ def _run_discover_now(by="tự động"):
     return True
 
 
+def _ticket_view(r, notes_latest, notes_count, now):
+    """Dựng dict 1 ticket (deadline/overdue/flag...) từ 1 row DB — dùng chung
+    cho /api/tickets (lọc theo tiêu chí) và export theo danh sách rc_key cụ thể."""
+    cses = json.loads(r["cses"] or "[]")
+    ftext, flevel = make_flag(r["voms_status"], r["ccts_status"])
+    # overdue: hạn = lúc VOMS gán KTV (assignedAt) + 48h; chỉ tính khi chưa xong cả 2 bên.
+    # Trước đây tính từ ccts_create nhưng CCTS ghi nhận không ổn định cho một số ticket.
+    deadline = ""
+    remain_min = None
+    closed_both = _vgroup(r["voms_status"]) in ("closed", "cancelled") and \
+        _cgroup(r["ccts_status"]) in ("closed", "closure")
+    voms_assigned = r["voms_assigned"] if "voms_assigned" in r.keys() else ""
+    if voms_assigned:
+        try:
+            dl = datetime.strptime(voms_assigned.strip()[:19], "%Y-%m-%d %H:%M:%S") + timedelta(hours=48)
+            deadline = dl.strftime("%Y-%m-%d %H:%M:%S")
+            remain_min = int((dl - now).total_seconds() // 60)
+        except Exception:
+            pass
+    is_over = (remain_min is not None and remain_min < 0 and not closed_both)
+    return {"rc_key": r["rc_key"], "rc": r["rc"], "province": r["province"],
+            "pcode": r["pcode"], "asp": r["asp"], "cses": cses, "station": r["station"],
+            "voms_status": r["voms_status"], "voms_time": r["voms_time"],
+            "voms_assigned": voms_assigned,
+            "ccts_status": r["ccts_status"],
+            "ccts_create": r["ccts_create"], "deadline": deadline,
+            "remain_min": remain_min, "closed_both": closed_both, "overdue": is_over,
+            "flag": ftext, "flag_level": flevel,
+            "note": notes_latest.get(r["rc_key"]), "note_count": notes_count.get(r["rc_key"], 0)}
+
+
+def _notes_maps(c):
+    notes_latest, notes_count = {}, {}
+    for n in c.execute("SELECT rc_key, author, text, created_at FROM notes ORDER BY id"):
+        notes_latest[n["rc_key"]] = {"author": n["author"], "text": n["text"], "time": n["created_at"]}
+        notes_count[n["rc_key"]] = notes_count.get(n["rc_key"], 0) + 1
+    return notes_latest, notes_count
+
+
+def _tickets_by_keys(rc_keys):
+    """Lấy đúng các ticket theo rc_key, giữ nguyên thứ tự rc_keys truyền vào —
+    dùng cho export theo đúng tập đang lọc/hiển thị trên màn hình."""
+    rc_keys = [k for k in (rc_keys or []) if k]
+    if not rc_keys:
+        return []
+    with db() as c:
+        placeholders = ",".join("?" * len(rc_keys))
+        rows = {r["rc_key"]: r for r in c.execute(
+            f"SELECT * FROM tickets WHERE rc_key IN ({placeholders})", rc_keys)}
+        notes_latest, notes_count = _notes_maps(c)
+    now = vn_now()
+    out = []
+    for k in rc_keys:
+        r = rows.get(k)
+        if r is not None:
+            out.append(_ticket_view(r, notes_latest, notes_count, now))
+    return out
+
+
 @app.get("/api/tickets")
 def list_tickets(cse: str = "", asp: str = "", search: str = "", level: str = "",
                  vstat: str = "", cstat: str = "", overdue: str = ""):
     with db() as c:
         rows = c.execute("SELECT * FROM tickets WHERE active=1 ORDER BY rc").fetchall()
-        notes_latest, notes_count = {}, {}
-        for n in c.execute("SELECT rc_key, author, text, created_at FROM notes ORDER BY id"):
-            notes_latest[n["rc_key"]] = {"author": n["author"], "text": n["text"], "time": n["created_at"]}
-            notes_count[n["rc_key"]] = notes_count.get(n["rc_key"], 0) + 1
+        notes_latest, notes_count = _notes_maps(c)
     out = []
     q = norm_key(search) if search else ""
     now = vn_now()
@@ -1162,41 +1261,23 @@ def list_tickets(cse: str = "", asp: str = "", search: str = "", level: str = ""
             continue
         if asp and (r["asp"] or "") != asp:
             continue
-        ftext, flevel = make_flag(r["voms_status"], r["ccts_status"])
+        _, flevel = make_flag(r["voms_status"], r["ccts_status"])
         if level and flevel != level:
             continue
         if vstat and (r["voms_status"] or "") != vstat:
             continue
         if cstat and (r["ccts_status"] or "") != cstat:
             continue
-        # overdue: hạn = ccts_create + 48h; chỉ tính khi chưa xong cả 2 bên
-        deadline = ""
-        remain_min = None
-        closed_both = _vgroup(r["voms_status"]) in ("closed", "cancelled") and \
-            _cgroup(r["ccts_status"]) in ("closed", "closure")
-        if r["ccts_create"]:
-            try:
-                dl = datetime.strptime(r["ccts_create"].strip()[:19], "%Y-%m-%d %H:%M:%S") + timedelta(hours=48)
-                deadline = dl.strftime("%Y-%m-%d %H:%M:%S")
-                remain_min = int((dl - now).total_seconds() // 60)
-            except Exception:
-                pass
-        is_over = (remain_min is not None and remain_min < 0 and not closed_both)
-        if overdue == "1" and not is_over:
+        view = _ticket_view(r, notes_latest, notes_count, now)
+        if overdue == "1" and not view["overdue"]:
             continue
-        if overdue == "soon" and not (remain_min is not None and 0 <= remain_min <= 720 and not closed_both):
+        if overdue == "soon" and not (view["remain_min"] is not None and 0 <= view["remain_min"] <= 720
+                                       and not view["closed_both"]):
             continue
         if q and q not in norm_key(r["rc"]) and q not in norm_key(r["station"] or "") \
            and q not in norm_key(r["province"] or ""):
             continue
-        out.append({"rc_key": r["rc_key"], "rc": r["rc"], "province": r["province"],
-                    "pcode": r["pcode"], "asp": r["asp"], "cses": cses, "station": r["station"],
-                    "voms_status": r["voms_status"], "voms_time": r["voms_time"],
-                    "ccts_status": r["ccts_status"],
-                    "ccts_create": r["ccts_create"], "deadline": deadline,
-                    "remain_min": remain_min, "closed_both": closed_both, "overdue": is_over,
-                    "flag": ftext, "flag_level": flevel,
-                    "note": notes_latest.get(r["rc_key"]), "note_count": notes_count.get(r["rc_key"], 0)})
+        out.append(view)
     return {"tickets": out, "count": len(out)}
 
 
@@ -1297,7 +1378,7 @@ def ccts_paste(body: CctsPasteIn):
             if k not in active:
                 continue
             c.execute("UPDATE tickets SET ccts_status=?, ccts_create=COALESCE(NULLIF(?, ''), ccts_create), ccts_time=? WHERE rc_key=?",
-                      (row["status"], row["create_time"], ts, k))
+                      (row["status"], row["occurrence_time"], ts, k))
             updated += 1
     return {"parsed": len(rows), "updated": updated}
 
@@ -1366,18 +1447,14 @@ def del_note(note_id: int):
     return {"ok": True}
 
 
-@app.get("/api/export")
-def export_xlsx(cse: str = "", asp: str = "", level: str = "", overdue: str = "",
-                search: str = "", vstat: str = "", cstat: str = ""):
-    data = list_tickets(cse=cse, asp=asp, level=level, overdue=overdue,
-                        search=search, vstat=vstat, cstat=cstat)["tickets"]
+def _build_xlsx_response(data, filename_tag=""):
     cols = ["STT", "ID Yêu cầu", "Tỉnh", "ASP", "Mã trạm", "Trạng thái (VOMS)", "Trạng thái CCTS",
-            "Create time CCTS", "Hạn xử lý (48h)", "Quá hạn?", "Cảnh báo", "Note mới nhất"]
+            "Gán KTV (VOMS)", "Hạn xử lý (48h)", "Quá hạn?", "Cảnh báo", "Note mới nhất"]
     rows = []
     for i, t in enumerate(data, 1):
         note = t["note"]
         rows.append([i, t["rc"], t["province"], t["asp"], t["station"],
-                     t["voms_status"], t["ccts_status"], t["ccts_create"], t["deadline"],
+                     t["voms_status"], t["ccts_status"], t.get("voms_assigned", ""), t["deadline"],
                      "QUÁ HẠN" if t["overdue"] else "", t["flag"],
                      (f"[{note['author']}] {note['text']}" if note else "")])
     df = pd.DataFrame(rows, columns=cols)
@@ -1395,11 +1472,34 @@ def export_xlsx(cse: str = "", asp: str = "", level: str = "", overdue: str = ""
                 width = max([len(str(x)) for x in d[col].fillna("")] + [len(str(col))])
                 ws.set_column(idx, idx, min(width + 2, 60))
     out.seek(0)
-    tag = ("_" + cse) if cse else (("_" + asp) if asp else "")
-    fn = f"bang_theo_doi{tag}_{vn_now().date().isoformat()}.xlsx"
+    fn = f"bang_theo_doi{filename_tag}_{vn_now().date().isoformat()}.xlsx"
     return Response(out.getvalue(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+@app.get("/api/export")
+def export_xlsx(cse: str = "", asp: str = "", level: str = "", overdue: str = "",
+                search: str = "", vstat: str = "", cstat: str = ""):
+    data = list_tickets(cse=cse, asp=asp, level=level, overdue=overdue,
+                        search=search, vstat=vstat, cstat=cstat)["tickets"]
+    tag = ("_" + cse) if cse else (("_" + asp) if asp else "")
+    return _build_xlsx_response(data, tag)
+
+
+class ExportRcsIn(BaseModel):
+    rc_keys: list[str]
+
+
+@app.post("/api/export_rcs")
+def export_xlsx_rcs(body: ExportRcsIn):
+    """Xuất Excel đúng theo danh sách rc_key được truyền vào — dùng khi frontend
+    đã lọc phía trình duyệt (nhiều trạng thái, quá hạn/sắp hạn/đã đóng, theo ngày)
+    và muốn xuất đúng y hệt tập đang hiển thị, không phải lọc lại theo tiêu chí đơn giản."""
+    data = _tickets_by_keys(body.rc_keys)
+    if not data:
+        raise HTTPException(400, "Không có ticket nào khớp để xuất.")
+    return _build_xlsx_response(data, "_loc")
 
 
 @app.get("/")

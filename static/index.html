@@ -113,6 +113,12 @@ tr.band-over.hl .rc{color:var(--over)}
 .pairchip:hover{background:var(--pri-soft);border-color:var(--pri)}
 .pairchip .n{background:#eef2fb;color:#4b5768;border-radius:var(--r-sm);padding:0 8px;font-weight:700}
 .pairchip.act{border-color:var(--pri);background:var(--pri-soft)}
+.msel{position:relative;display:inline-block}
+.msel-panel{position:absolute;top:calc(100% + 6px);left:0;background:#fff;border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:0 8px 24px rgba(10,20,40,.14);padding:8px;min-width:220px;max-height:280px;overflow:auto;z-index:50}
+.msel-panel label{display:flex;align-items:center;gap:7px;padding:5px 6px;font-size:13px;cursor:pointer;border-radius:4px;white-space:nowrap}
+.msel-panel label:hover{background:var(--pri-soft)}
+.msel-panel input{accent-color:var(--pri)}
+.msel-clear{display:block;width:100%;text-align:left;background:none;border:0;border-top:1px solid var(--line);margin-top:4px;padding:6px 6px 0;color:var(--pri);font-size:12px;cursor:pointer}
 @media (max-width:900px){
   .wrap{padding:0 12px}
   .hd{gap:10px}
@@ -154,11 +160,12 @@ tr.band-over.hl .rc{color:var(--over)}
 <div class="wrap" style="padding-top:14px;padding-bottom:40px">
   <div class="toolbar">
     <input type="text" id="q" placeholder="Tìm RC / trạm / tỉnh" style="width:230px">
-    <select id="f-over">
-      <option value="">Hạn: tất cả</option>
-      <option value="soon">Sắp tới hạn (12h)</option>
-      <option value="1">Đã quá hạn</option>
-    </select>
+    <label class="mut" style="font-size:12px;display:flex;align-items:center;gap:5px">Gán KTV
+      <input type="date" id="f-date-from" title="Từ ngày">–<input type="date" id="f-date-to" title="Đến ngày">
+    </label>
+    <label class="toggle"><input type="checkbox" id="f-due-over"> Quá hạn</label>
+    <label class="toggle"><input type="checkbox" id="f-due-soon"> Sắp tới hạn (12h)</label>
+    <label class="toggle"><input type="checkbox" id="f-due-done"> Đã đóng</label>
     <select id="f-level">
       <option value="">Cảnh báo: tất cả</option>
       <option value="action">Đóng được / cần thao tác</option>
@@ -166,8 +173,14 @@ tr.band-over.hl .rc{color:var(--over)}
       <option value="warn">Cần kiểm tra</option>
       <option value="info">Theo dõi</option>
     </select>
-    <select id="f-vstatus"><option value="">VOMS: tất cả</option></select>
-    <select id="f-cstatus"><option value="">CCTS: tất cả</option></select>
+    <div class="msel" id="f-vstatus-wrap">
+      <button class="btn" id="f-vstatus-btn" type="button">VOMS: tất cả</button>
+      <div class="msel-panel" id="f-vstatus-panel" style="display:none"></div>
+    </div>
+    <div class="msel" id="f-cstatus-wrap">
+      <button class="btn" id="f-cstatus-btn" type="button">CCTS: tất cả</button>
+      <div class="msel-panel" id="f-cstatus-panel" style="display:none"></div>
+    </div>
     <button class="btn" id="pairs-btn">Cặp trạng thái</button>
     <label class="toggle"><input type="checkbox" id="t-hl" checked> Tô đậm quá hạn</label>
     <label class="toggle"><input type="checkbox" id="t-hidedone"> Ẩn đã xong</label>
@@ -209,7 +222,7 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const api=async(u,o)=>{const r=await fetch(u,o);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d};
 const myCse=()=>localStorage.getItem('tt_cse')||'';
-let ASP='', TICKETS=[], CUR=null, META=null;
+let ASP='', TICKETS=[], CUR=null, META=null, FILTERED_KEYS=[];
 
 function vBadge(s){if(!s)return '<span class="badge b-none">-</span>';const n=s.toLowerCase();
   // Trạng thái VOMS đôi khi là cả câu lỗi dài -> rút gọn 1 dòng + "…", giữ nguyên đầy đủ ở title (hover xem full).
@@ -258,7 +271,6 @@ function qsBase(a){const p=new URLSearchParams();if(myCse())p.set('cse',myCse())
 function qs(){const p=new URLSearchParams();
   if(myCse())p.set('cse',myCse());if(ASP)p.set('asp',ASP);
   if($('#q').value.trim())p.set('search',$('#q').value.trim());
-  if($('#f-over').value)p.set('overdue',$('#f-over').value);
   if($('#f-level').value)p.set('level',$('#f-level').value);
   return p.toString()}
 async function loadMeta(){META=await api('/api/meta');
@@ -275,45 +287,90 @@ async function load(){
   $('#f-live').textContent='bảng lúc '+new Date().toLocaleTimeString('vi').slice(0,5);
 }
 const ES='\u0000';                         // giá trị đại diện cho trạng thái "chưa lấy" (trống)
-const stMatch=(sel,st)=>sel===''||(sel===ES?(st||'')==='':st===sel);
-function fillStatusSel(sel,vals){
-  const cur=sel.value, first=sel.querySelector('option').outerHTML;
-  sel.innerHTML=first;
-  vals.forEach(s=>{const o=document.createElement('option');o.value=(s===''?ES:s);o.textContent=(s||'(chưa lấy)');sel.appendChild(o)});
-  sel.value=[...sel.options].some(o=>o.value===cur)?cur:'';
+const effVal=s=>(s||'')===''?ES:s;
+// Lọc nhiều trạng thái cùng lúc: Set rỗng = "tất cả", có phần tử = chỉ khớp đúng các giá trị đã chọn.
+let VSTATUS_SEL=new Set(), CSTATUS_SEL=new Set(), VSTATUS_VALS=[], CSTATUS_VALS=[];
+function updateMselBtn(btnSel,selSet,label){
+  $(btnSel).textContent=label+(selSet.size?': '+selSet.size+' đã chọn':': tất cả');
+}
+function renderMultiSelect(panelSel,btnSel,vals,selSet,label){
+  const panel=$(panelSel);
+  panel.innerHTML=vals.map(v=>{
+    const val=effVal(v);
+    return '<label><input type="checkbox" data-v="'+esc(val)+'" '+(selSet.has(val)?'checked':'')+'> '+esc(v||'(chưa lấy)')+'</label>';
+  }).join('')+(vals.length?'<button type="button" class="msel-clear">Bỏ chọn hết</button>':'<span class="mut" style="font-size:12.5px">chưa có dữ liệu</span>');
+  panel.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.onchange=()=>{
+      if(cb.checked)selSet.add(cb.dataset.v);else selSet.delete(cb.dataset.v);
+      updateMselBtn(btnSel,selSet,label);render();renderPairs();
+    };
+  });
+  const clr=panel.querySelector('.msel-clear');
+  if(clr)clr.onclick=()=>{selSet.clear();renderMultiSelect(panelSel,btnSel,vals,selSet,label);updateMselBtn(btnSel,selSet,label);render();renderPairs()};
 }
 function populateStatus(){
-  fillStatusSel($('#f-vstatus'),[...new Set(TICKETS.map(t=>t.voms_status||''))].sort());
-  fillStatusSel($('#f-cstatus'),[...new Set(TICKETS.map(t=>t.ccts_status||''))].sort());
+  VSTATUS_VALS=[...new Set(TICKETS.map(t=>t.voms_status||''))].sort();
+  CSTATUS_VALS=[...new Set(TICKETS.map(t=>t.ccts_status||''))].sort();
+  renderMultiSelect('#f-vstatus-panel','#f-vstatus-btn',VSTATUS_VALS,VSTATUS_SEL,'VOMS');
+  renderMultiSelect('#f-cstatus-panel','#f-cstatus-btn',CSTATUS_VALS,CSTATUS_SEL,'CCTS');
+  updateMselBtn('#f-vstatus-btn',VSTATUS_SEL,'VOMS');
+  updateMselBtn('#f-cstatus-btn',CSTATUS_SEL,'CCTS');
 }
 function statusFiltered(){
-  const sv=$('#f-vstatus').value, sc=$('#f-cstatus').value;
-  return TICKETS.filter(t=>stMatch(sv,t.voms_status)&&stMatch(sc,t.ccts_status));
+  return TICKETS.filter(t=>
+    (VSTATUS_SEL.size===0||VSTATUS_SEL.has(effVal(t.voms_status)))&&
+    (CSTATUS_SEL.size===0||CSTATUS_SEL.has(effVal(t.ccts_status))));
+}
+function dueMatch(t){
+  const anyChecked=$('#f-due-over').checked||$('#f-due-soon').checked||$('#f-due-done').checked;
+  if(!anyChecked)return true;
+  if($('#f-due-over').checked&&t.overdue)return true;
+  if($('#f-due-soon').checked&&!t.overdue&&t.remain_min!=null&&t.remain_min<=720&&!t.closed_both)return true;
+  if($('#f-due-done').checked&&t.closed_both)return true;
+  return false;
+}
+function dateMatch(t){
+  const from=$('#f-date-from').value, to=$('#f-date-to').value;
+  if(!from&&!to)return true;
+  if(!t.voms_assigned)return false;
+  const d=t.voms_assigned.slice(0,10);
+  if(from&&d<from)return false;
+  if(to&&d>to)return false;
+  return true;
 }
 function renderPairs(){
   const panel=$('#pairs-panel'); if(panel.style.display==='none')return;
   const map=new Map();
   TICKETS.forEach(t=>{const k=(t.voms_status||'')+'\u0001'+(t.ccts_status||'');map.set(k,(map.get(k)||0)+1)});
   const combos=[...map.entries()].map(([k,n])=>{const p=k.split('\u0001');return {v:p[0],c:p[1],n}}).sort((a,b)=>b.n-a.n);
-  const sv=$('#f-vstatus').value, sc=$('#f-cstatus').value;
-  const chip=o=>{const act=(sv===(o.v===''?ES:o.v))&&(sc===(o.c===''?ES:o.c));
+  const chip=o=>{const act=VSTATUS_SEL.size===1&&VSTATUS_SEL.has(effVal(o.v))&&CSTATUS_SEL.size===1&&CSTATUS_SEL.has(effVal(o.c));
     return '<div class="pairchip'+(act?' act':'')+'" data-v="'+esc(o.v)+'" data-c="'+esc(o.c)+'">'
       +'<span class="vv">'+esc(o.v||'(chưa lấy)')+'</span><span class="mut">/</span>'
       +'<span class="vv">'+esc(o.c||'(chưa lấy)')+'</span><span class="n">'+o.n+'</span></div>';};
   panel.innerHTML='<div class="ph"><b>Cặp trạng thái VOMS / CCTS</b>'
-    +'<span class="mut" style="font-size:12px">bấm 1 cặp để lọc</span><span class="sp" style="flex:1"></span>'
+    +'<span class="mut" style="font-size:12px">bấm 1 cặp để lọc đúng cặp đó</span><span class="sp" style="flex:1"></span>'
     +'<button class="btn" id="pairs-clear">Bỏ lọc trạng thái</button></div>'
     +'<div id="pairs-grid">'+(combos.length?combos.map(chip).join(''):'<span class="mut">chưa có dữ liệu</span>')+'</div>';
   panel.querySelectorAll('.pairchip').forEach(el=>el.onclick=()=>{
-    $('#f-vstatus').value=(el.dataset.v===''?ES:el.dataset.v);
-    $('#f-cstatus').value=(el.dataset.c===''?ES:el.dataset.c);
+    VSTATUS_SEL=new Set([effVal(el.dataset.v)]);
+    CSTATUS_SEL=new Set([effVal(el.dataset.c)]);
+    renderMultiSelect('#f-vstatus-panel','#f-vstatus-btn',VSTATUS_VALS,VSTATUS_SEL,'VOMS');
+    renderMultiSelect('#f-cstatus-panel','#f-cstatus-btn',CSTATUS_VALS,CSTATUS_SEL,'CCTS');
+    updateMselBtn('#f-vstatus-btn',VSTATUS_SEL,'VOMS');updateMselBtn('#f-cstatus-btn',CSTATUS_SEL,'CCTS');
     render();renderPairs();
   });
-  $('#pairs-clear').onclick=()=>{$('#f-vstatus').value='';$('#f-cstatus').value='';render();renderPairs()};
+  $('#pairs-clear').onclick=()=>{
+    VSTATUS_SEL.clear();CSTATUS_SEL.clear();
+    renderMultiSelect('#f-vstatus-panel','#f-vstatus-btn',VSTATUS_VALS,VSTATUS_SEL,'VOMS');
+    renderMultiSelect('#f-cstatus-panel','#f-cstatus-btn',CSTATUS_VALS,CSTATUS_SEL,'CCTS');
+    updateMselBtn('#f-vstatus-btn',VSTATUS_SEL,'VOMS');updateMselBtn('#f-cstatus-btn',CSTATUS_SEL,'CCTS');
+    render();renderPairs();
+  };
 }
 function render(){
   const hideDone=$('#t-hidedone').checked,hl=$('#t-hl').checked;
-  let rows=statusFiltered().filter(t=>!(hideDone&&t.closed_both));
+  let rows=statusFiltered().filter(dueMatch).filter(dateMatch).filter(t=>!(hideDone&&t.closed_both));
+  FILTERED_KEYS=rows.map(t=>t.rc_key);
   const nOver=rows.filter(t=>t.overdue).length;
   const nSoon=rows.filter(t=>!t.overdue&&t.remain_min!=null&&t.remain_min<=720&&!t.closed_both).length;
   const nAct=rows.filter(t=>t.flag_level==='action').length;
@@ -334,7 +391,7 @@ function render(){
       +'<td>'+vBadge(t.voms_status)+(t.voms_time?'<div class="sub">'+esc(t.voms_time.slice(5,16))+'</div>':'')+'</td>'
       +'<td>'+cBadge(t.ccts_status)+'</td>'
       +'<td>'+remainPill(t)+'<div class="sub">'+esc((t.deadline||'').slice(5,16))+'</div>'
-        +(t.ccts_create?'<div class="sub">Tạo CCTS: '+esc(t.ccts_create.slice(5,16))+'</div>':'')+'</td>'
+        +(t.voms_assigned?'<div class="sub">Gán KTV: '+esc(t.voms_assigned.slice(5,16))+'</div>':'')+'</td>'
       +'<td><div class="flag '+(t.flag_level||'')+'">'+esc(t.flag||'')+'</div></td>'
       +'<td class="note-cell '+(t.note?'':'empty')+'" data-rc="'+esc(t.rc_key)+'" data-name="'+esc(t.rc)+'">'+note+'</td>';
     tb.appendChild(tr);
@@ -376,18 +433,42 @@ $('#update-mine-stop').onclick=async()=>{
     if(MINE_IDS[kind])try{await api('/api/job/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,job_id:MINE_IDS[kind]})})}catch(e){}
   }
 };
-$('#f-over').onchange=load;$('#f-level').onchange=load;
+$('#f-level').onchange=load;
 $('#t-hl').onchange=render;$('#t-hidedone').onchange=render;
-$('#f-vstatus').onchange=()=>{render();renderPairs()};
-$('#f-cstatus').onchange=()=>{render();renderPairs()};
+$('#f-due-over').onchange=render;$('#f-due-soon').onchange=render;$('#f-due-done').onchange=render;
+$('#f-date-from').onchange=render;$('#f-date-to').onchange=render;
+function toggleMsel(sel){
+  const opening=$(sel).style.display==='none'||!$(sel).style.display;
+  $('#f-vstatus-panel').style.display='none';$('#f-cstatus-panel').style.display='none';
+  if(opening)$(sel).style.display='block';
+}
+$('#f-vstatus-btn').onclick=e=>{e.stopPropagation();toggleMsel('#f-vstatus-panel')};
+$('#f-cstatus-btn').onclick=e=>{e.stopPropagation();toggleMsel('#f-cstatus-panel')};
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.msel')){$('#f-vstatus-panel').style.display='none';$('#f-cstatus-panel').style.display='none'}
+});
 $('#pairs-btn').onclick=()=>{const p=$('#pairs-panel');p.style.display=(p.style.display==='none')?'':'none';renderPairs()};
 let qt;$('#q').addEventListener('input',()=>{clearTimeout(qt);qt=setTimeout(load,350)});
-$('#export').onclick=()=>{
-  const p=new URLSearchParams(qs());
-  const sv=$('#f-vstatus').value, sc=$('#f-cstatus').value;
-  if(sv&&sv!==ES)p.set('vstat',sv);
-  if(sc&&sc!==ES)p.set('cstat',sc);
-  location.href='/api/export?'+p.toString();
+$('#export').onclick=async()=>{
+  // Xuất đúng y hệt tập đang lọc/hiển thị trên màn hình (mọi bộ lọc: trạng thái
+  // nhiều lựa chọn, quá hạn/sắp hạn/đã đóng, theo ngày) — gửi thẳng danh sách
+  // rc_key đang render lên backend thay vì backend tự lọc lại theo tiêu chí đơn giản.
+  const btn=$('#export');
+  if(!FILTERED_KEYS.length){alert('Không có ticket nào đang hiển thị để xuất.');return}
+  btn.disabled=true;const old=btn.textContent;btn.textContent='Đang xuất...';
+  try{
+    const r=await fetch('/api/export_rcs',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({rc_keys:FILTERED_KEYS})});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||('HTTP '+r.status))}
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=/filename="([^"]+)"/.exec(cd);
+    const fn=m?m[1]:'bang_theo_doi.xlsx';
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=fn;document.body.appendChild(a);a.click();
+    a.remove();URL.revokeObjectURL(url);
+  }catch(e){alert('Xuất Excel lỗi: '+e.message)}
+  finally{btn.disabled=false;btn.textContent=old}
 };
 
 function closeM(){$('#ov').style.display='none';CUR=null}

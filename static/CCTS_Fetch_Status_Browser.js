@@ -4,7 +4,8 @@
   //  CCTS — Lấy trạng thái theo list RC, CHẠY TRONG TAB (không dính 511)
   //  Tab console.cnpowercore.com đã login -> F12 -> Console -> dán file -> Enter.
   //  Panel hiện góc phải: dán list RC -> Run -> ra TSV (tự copy) để dán vào
-  //  APP bước 3 (ô "dán tay"). Đọc cố định: khớp thirdTicketId -> cctsTicketStatus + createTime.
+  //  APP bước 3 (ô "dán tay"). Đọc cố định: khớp thirdTicketId -> cctsTicketStatus + occurrenceTime
+  //  (hạn 48h tính từ lúc SỰ CỐ XẢY RA, không phải lúc ticket CCTS được tạo).
   // ============================================================
 
   const API = 'https://cloud.cnpowercore.com:8091/ccts/cctsTicket/findCCTSTicket';
@@ -12,7 +13,7 @@
   const TZ = 420;                          // UTC+7
   const DELAY = 150;
   const TSV_HEADERS = ['External Ticket ID (query)', 'Matched Ext ID', 'Ticket Status',
-                       'Create Time', 'Rows Found', 'Matched?', 'Note'];
+                       'Occurrence Time', 'Rows Found', 'Matched?', 'Note'];
 
   const PANEL_ID = 'ccts-fetch-panel', STYLE_ID = 'ccts-fetch-style';
   document.getElementById(PANEL_ID)?.remove();
@@ -90,7 +91,7 @@
       query: rc,
       extId: hit ? (hit.thirdTicketId || '') : '',
       status: hit ? (hit.cctsTicketStatus || '(trống)') : (items.length ? 'Không khớp mã' : 'Không có dữ liệu'),
-      createTime: hit ? (hit.createTime || '') : '',
+      occurrenceTime: hit ? (hit.occurrenceTime || hit.createTime || '') : '',
       rows: items.length,
       matched: hit ? 'YES' : 'NO',
       note: hit ? '' : (items.length ? items.length + ' record không khớp ' + field : 'không tìm thấy'),
@@ -100,7 +101,7 @@
   function toTSV(rows) {
     const cell = (v) => String(v == null ? '' : v).replace(/[\t\r\n]+/g, ' ').trim();
     const lines = [TSV_HEADERS.join('\t')];
-    rows.forEach((r) => lines.push([r.query, r.extId, r.status, r.createTime, r.rows, r.matched, r.note].map(cell).join('\t')));
+    rows.forEach((r) => lines.push([r.query, r.extId, r.status, r.occurrenceTime, r.rows, r.matched, r.note].map(cell).join('\t')));
     return lines.join('\n');
   }
   async function copyText(t) {
@@ -174,7 +175,7 @@
         if (res.matched === 'YES') matched++;
         out.push(res);
       } catch (e) {
-        out.push({ query: list[i], extId: '', status: e.code === '511' ? 'LỖI 511' : 'LỖI', createTime: '', rows: 0, matched: 'N/A', note: String(e.message || e) });
+        out.push({ query: list[i], extId: '', status: e.code === '511' ? 'LỖI 511' : 'LỖI', occurrenceTime: '', rows: 0, matched: 'N/A', note: String(e.message || e) });
         if (e.fatal) { stt.innerHTML = `<span style="color:#d9820a">Dừng: ${e.message}. ${e.code === '511' ? 'Lạ — trong tab không nên 511; thử F5 đăng nhập lại.' : 'F5 đăng nhập lại.'}</span>`; break; }
       }
       await sleep(DELAY);
