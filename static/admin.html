@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quản trị - Ticket Tracker</title>
+<style>
+:root{
+  --bg:#f4f6fb;--panel:#fff;--line:#dde2ec;--txt:#1b2330;--mut:#4b5768;
+  --pri:#2b57cc;--pri-d:#1f3f99;--pri-soft:#e8eefc;
+  --ok:#157347;--warn:#92400e;--danger:#b91c1c;
+  --r:6px;--r-sm:4px;
+}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 "Segoe UI",Roboto,-apple-system,system-ui,Arial,sans-serif;color:var(--txt);background:var(--bg)}
+a{color:var(--pri);text-decoration:none}
+.wrap{max-width:1040px;margin:0 auto;padding:0 18px 48px}
+header{background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+.hd{display:flex;align-items:center;gap:12px;padding:12px 18px;max-width:1040px;margin:0 auto;flex-wrap:wrap}
+.hd .brand{font-size:16px;font-weight:800;flex:1}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-top:14px}
+.card h2{font-size:14.5px;margin:0 0 4px}
+.card .desc{color:var(--mut);font-size:12.5px;margin-bottom:14px}
+label.fl{display:block;font-size:12px;color:var(--mut);font-weight:600;margin:10px 0 4px}
+input[type=text],input[type=password],input[type=number],textarea{width:100%;border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 11px;font-size:13px;font-family:inherit}
+input:focus,textarea:focus{outline:2px solid var(--pri-soft);border-color:var(--pri)}
+input[type=number]{width:80px}
+textarea{font-family:monospace;font-size:12px;resize:vertical}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.col{flex:1;min-width:260px}
+.btn{border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 15px;font-size:13px;font-weight:700;cursor:pointer;background:#fff;color:#2f3850}
+.btn:hover{background:#f4f6fb}
+.btn.pri{background:var(--pri);border-color:var(--pri);color:#fff}.btn.pri:hover{background:var(--pri-d);border-color:var(--pri-d)}
+.btn:disabled{opacity:.5;cursor:default}
+.stt{font-size:12.5px;min-height:18px}.stt.ok{color:var(--ok)}.stt.err{color:var(--danger)}
+.mut{color:var(--mut)}
+.health{display:flex;gap:14px;flex-wrap:wrap}
+.hbox{flex:1;min-width:240px;border:1px solid var(--line);border-radius:var(--r);padding:14px}
+.hbox .top{display:flex;align-items:center;gap:9px;font-weight:700}
+.dot{width:11px;height:11px;border-radius:50%;display:inline-block}
+.dot.g{background:var(--ok)}.dot.r{background:var(--danger)}.dot.y{background:var(--warn)}.dot.n{background:#c3c9d6}
+.hbox .s{font-size:13px;margin-top:6px}.hbox .m{font-size:11.5px;color:var(--mut);margin-top:3px}
+.prog{height:8px;background:#eef2f7;border-radius:var(--r-sm);overflow:hidden;flex:1;min-width:160px}
+.prog i{display:block;height:100%;width:0;background:var(--pri);transition:width .3s}
+.chip{display:inline-block;background:#eef2fb;border-radius:var(--r-sm);padding:4px 11px;margin:3px 5px 3px 0;font-size:12.5px;font-weight:600;color:#3a4356}
+.copyline{display:flex;align-items:center;gap:10px;margin:5px 0}
+.switch{display:flex;align-items:center;gap:9px}
+.switch input,.chk input{width:auto}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:#3a4356}
+details summary{cursor:pointer;font-size:13px;color:var(--mut);margin-top:8px}
+pre.code{background:#0f172a;color:#d7e0f0;border-radius:var(--r-sm);padding:12px;font-size:11px;overflow:auto;max-height:220px;margin-top:8px}
+table.jt{width:100%;border-collapse:collapse;font-size:12.5px}
+table.jt th{text-align:left;color:var(--mut);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.03em;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.jt td{padding:8px 10px;border-bottom:1px solid #eef0f5;vertical-align:middle}
+.jstat{display:inline-flex;align-items:center;gap:7px;font-weight:700}
+.jrun{color:var(--ok)}.jerr{color:var(--danger)}.jidle{color:#64748b}
+.jbar{height:6px;width:120px;background:#eef2f7;border-radius:3px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:8px}
+.jbar i{display:block;height:100%;background:var(--pri)}
+.blink{animation:bk 1s infinite}@keyframes bk{50%{opacity:.35}}
+
+#lock{position:fixed;inset:0;background:#f4f6fb;display:none;align-items:center;justify-content:center;z-index:200}
+#lock .lockbox{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:26px 28px;width:340px;max-width:92vw;text-align:left}
+#lock .lt{font-size:17px;font-weight:800}
+#lock .ld{color:var(--mut);font-size:12.5px;margin:6px 0 14px}
+#lock input{width:100%}
+@media (max-width:640px){
+  .wrap{padding:0 12px 40px}
+  .row{gap:8px}
+  .col{min-width:100%}
+}
+</style>
+</head>
+<body>
+<div id="lock"><div class="lockbox"><div class="lt">Khu quản trị</div><div class="ld">Nhập mật khẩu để mở trang quản trị.</div><input type="password" id="lock-pass" placeholder="Mật khẩu" autocomplete="current-password"><button class="btn pri" id="lock-btn" style="width:100%;margin-top:10px">Mở</button><div class="stt err" id="lock-stt" style="margin-top:8px"></div><a href="/" style="display:inline-block;margin-top:12px;font-size:12px">Về bảng theo dõi</a></div></div>
+<div id="page" style="display:none">
+<header><div class="hd"><div class="brand">Quản trị - Ticket Tracker</div><a href="/">Về bảng theo dõi</a></div></header>
+<div class="wrap">
+
+  <div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <b style="font-size:13px">Copy nhanh script:</b>
+    <button class="btn" data-copy="/static/VOMS_Get_Credentials.js">Token VOMS</button>
+    <button class="btn" data-copy="/static/CCTS_Get_Credentials.js">Token CCTS</button>
+    <button class="btn" data-copy="/static/CCTS_Fetch_Status_Browser.js">Lấy status CCTS</button>
+    <span class="mut" data-s style="font-size:12px"></span>
+  </div>
+
+  <div class="card">
+    <h2>Trạng thái đồng bộ (ai đang chạy)</h2>
+    <div class="desc">Cập nhật vài giây một lần. Mọi người mở trang này đều thấy giống nhau.</div>
+    <table class="jt"><thead><tr>
+      <th>Nguồn</th><th>Trạng thái</th><th>Tiến độ</th><th>Luồng</th><th>Người bấm</th><th>Phạm vi</th><th>Bắt đầu</th><th>Ghi chú</th><th></th>
+    </tr></thead><tbody id="jt-body"></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>Kết nối và tự động cập nhật</h2>
+    <div class="desc">Xem token còn sống không, và bật tự chạy lại định kỳ. Token chỉ nằm trong RAM server, tắt server là mất.</div>
+    <div class="health" id="health"></div>
+    <div class="row" style="align-items:center;margin-top:12px">
+      <button class="btn" id="btn-health">Kiểm tra token ngay</button>
+      <label class="switch"><input type="checkbox" id="auto-on"> Tự cập nhật mỗi</label>
+      <input type="number" id="auto-int" value="20" min="5"> phút
+      <button class="btn" id="btn-auto">Lưu</button>
+      <span class="stt" id="auto-stt"></span>
+    </div>
+    <div class="mut" id="auto-last" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Lấy token nhanh (chạy trong Console)</h2>
+    <div class="desc">Copy đoạn script, mở đúng trang (đã đăng nhập), F12 - Console - dán - Enter.</div>
+    <div class="row">
+      <div class="col">
+        <b style="font-size:13px">VOMS</b>
+        <div class="copyline"><button class="btn" data-copy="/static/VOMS_Get_Credentials.js">Copy script VOMS</button><span class="mut" data-s></span></div>
+        <div class="mut" style="font-size:12px">Chạy ở voms.vgreen.net - in ra Bearer token và X-Tenant-Id ở Console.</div>
+        <details><summary>Xem script</summary><pre class="code" data-view="/static/VOMS_Get_Credentials.js">...</pre></details>
+      </div>
+      <div class="col">
+        <b style="font-size:13px">CCTS</b>
+        <div class="copyline"><button class="btn" data-copy="/static/CCTS_Get_Credentials.js">Copy script CCTS</button><span class="mut" data-s></span></div>
+        <div class="mut" style="font-size:12px">Chạy ở console.cnpowercore.com - panel hiện Token và Cookie để copy.</div>
+        <details><summary>Xem script</summary><pre class="code" data-view="/static/CCTS_Get_Credentials.js">...</pre></details>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Lưu token</h2>
+    <div class="desc">Lưu 1 lần để nút Lấy và tự cập nhật dùng lại. VOMS khoảng 4 ngày mới phải lấy lại.</div>
+    <div class="row">
+      <div class="col">
+        <b style="font-size:13px">VOMS</b>
+        <label class="fl">Authorization (Bearer ...)</label>
+        <input type="password" id="v-tok" placeholder="dán authorization">
+        <label class="fl">X-Tenant-Id</label>
+        <input type="text" id="v-ten" placeholder="dán x-tenant-id">
+      </div>
+      <div class="col">
+        <b style="font-size:13px">CCTS</b>
+        <label class="fl">Token (body)</label>
+        <input type="password" id="c-tok" placeholder="dán token CCTS">
+        <label class="fl">Cookie (thường sẽ bị 511, có thể bỏ trống)</label>
+        <input type="password" id="c-ck" placeholder="tuỳ chọn">
+      </div>
+    </div>
+    <div style="margin-top:12px"><button class="btn pri" id="btn-creds">Lưu token và kiểm tra</button> <span class="stt" id="creds-stt"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>1. Nhập file tổng và chia ASP</h2>
+    <div class="desc">Upload file tổng .xlsx, phân tỉnh sang ASP (SE/EC/ITS/ES) và CSE phụ trách. Import lại vẫn giữ nguyên ghi chú.</div>
+    <div class="row" style="align-items:center">
+      <input type="file" id="file" accept=".xlsx" style="flex:1;min-width:240px">
+      <button class="btn pri" id="btn-import">Import</button>
+      <span class="stt" id="import-stt"></span>
+    </div>
+    <div id="import-sum" style="margin-top:12px"></div>
+    <details id="ids-box" style="display:none"><summary>Copy danh sách ID theo ASP</summary><div id="ids-lines" style="margin-top:8px"></div></details>
+  </div>
+
+  <div class="card">
+    <h2>2. Lấy trạng thái</h2>
+    <div class="desc">Dùng token đã lưu. Số luồng cao chạy nhanh hơn nhưng đừng để quá cao kẻo bị chặn.</div>
+    <div class="row" style="align-items:center;margin-bottom:6px">
+      <label class="fl" style="margin:0">Số luồng</label>
+      <input type="number" id="workers" value="6" min="1" max="12">
+      <span class="mut" style="font-size:12px">1 đến 12 (khuyên 6)</span>
+    </div>
+    <div class="row">
+      <div class="col">
+        <b style="font-size:13px">VOMS (API)</b>
+        <div style="margin-top:8px">
+          <button class="btn pri" id="btn-voms">Lấy toàn bộ VOMS</button>
+          <button class="btn" id="btn-voms-miss">Lấy tiếp phần còn thiếu</button>
+          <button class="btn" id="btn-voms-stop" disabled style="color:var(--danger)">Dừng</button>
+        </div>
+        <div class="row" style="align-items:center;margin-top:8px"><div class="prog"><i id="v-bar"></i></div></div>
+        <div class="stt" id="v-stt"></div>
+      </div>
+      <div class="col">
+        <b style="font-size:13px">CCTS</b>
+        <div class="copyline" style="margin:6px 0"><button class="btn" data-copy="/static/CCTS_Fetch_Status_Browser.js">Copy script lấy status CCTS</button><span class="mut" data-s></span></div><div class="mut" style="margin-bottom:6px;font-size:12px">Chạy script này trong tab CCTS, dán list RC, nó ra TSV rồi dán vào ô dưới:</div>
+        <textarea id="c-tsv" rows="3" placeholder="Dán TSV từ script CCTS"></textarea>
+        <div style="margin-top:8px">
+          <button class="btn pri" id="btn-paste">Nạp TSV</button>
+          <button class="btn" id="btn-ccts">Thử API toàn bộ</button>
+          <button class="btn" id="btn-ccts-miss">API phần còn thiếu</button>
+          <button class="btn" id="btn-ccts-stop" disabled style="color:var(--danger)">Dừng</button>
+          <span class="stt" id="c-stt"></span>
+        </div>
+        <div class="row" style="align-items:center;margin-top:8px"><div class="prog"><i id="c-bar"></i></div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function akey(){return localStorage.getItem('tt_admin')||''}
+async function api(u,o){o=o||{};o.headers=Object.assign({'X-Admin-Key':akey()},o.headers||{});
+  let r=await fetch(u,o);
+  if(r.status===401){await showLock();o.headers['X-Admin-Key']=akey();r=await fetch(u,o)}
+  const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
+async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const a=document.createElement('textarea');a.value=t;a.style.cssText='position:fixed;top:-999px';document.body.appendChild(a);a.select();const ok=document.execCommand('copy');a.remove();return ok}}
+function setStt(el,m,c){el.textContent=m;el.className='stt '+(c||'')}
+function dotCls(st){const s=(st||'').toLowerCase();if(s==='ok')return 'g';if(s.includes('hết hạn')||s.includes('chặn'))return 'r';if(s.includes('lỗi'))return 'y';return 'n'}
+const workers=()=>Math.max(1,Math.min(12,+$('#workers').value||6));
+
+function renderHealth(h,creds){
+  const box=$('#health');
+  const one=(name,hh,cc)=>{
+    const saved=cc&&cc.has_token?('token lưu lúc '+(cc.saved_at||'').slice(5,16)):'chưa lưu token';
+    return '<div class="hbox"><div class="top"><span class="dot '+dotCls(hh.status)+'"></span>'+name+'</div>'
+      +'<div class="s">'+esc(hh.status||'-')+'</div>'
+      +'<div class="m">'+esc(saved)+(hh.checked_at?(' · kiểm tra '+hh.checked_at.slice(5,16)):'')+'</div></div>';
+  };
+  box.innerHTML=one('VOMS',h.voms||{},(creds||{}).voms)+one('CCTS',h.ccts||{},(creds||{}).ccts);
+}
+let CREDS_CACHE={};
+function renderAuto(m){
+  $('#auto-on').checked=!!(m.auto&&m.auto.enabled);
+  if(m.auto&&document.activeElement!==$('#auto-int'))$('#auto-int').value=m.auto.interval_min;
+  $('#auto-last').textContent=(m.auto&&m.auto.last_run)?('Lần tự chạy gần nhất: '+m.auto.last_run+' - '+(m.auto.last_result||'')):'';
+}
+// Bảng theo dõi đồng bộ: VOMS / CCTS / tự động — ai đang chạy, tới đâu.
+// Nhiều người có thể chạy cùng lúc nên mỗi "kind" giờ là 1 danh sách job (job_id riêng),
+// không còn 1 job duy nhất — mỗi job 1 dòng, job mới nhất lên trên.
+async function cancelJob(kind,jobId){
+  try{await api('/api/job/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,job_id:jobId})});tick()}
+  catch(e){alert('Không dừng được: '+e.message)}
+}
+window.cancelJob=cancelJob;
+function jrow(name,kind,j){
+  const pct=j.total?Math.round(j.done/j.total*100):0;
+  let st,cls,note;
+  if(j.running){st='Đang chạy';cls='jrun';note=j.current||'';}
+  else if(j.cancelled){st='Đã dừng';cls='jidle';note='dừng theo yêu cầu, khớp '+(j.ok||0)+'/'+(j.done||0)+' đã lấy';}
+  else if(j.error){st='Dừng lỗi';cls='jerr';note=j.error;}
+  else if(j.finished){st='Xong';cls='jidle';note='khớp '+(j.ok||0)+'/'+(j.total||0);}
+  else{st='Chưa chạy';cls='jidle';note='';}
+  const prog=(j.running||j.finished||j.cancelled)?('<span class="jbar"><i style="width:'+pct+'%"></i></span>'+(j.done||0)+'/'+(j.total||0)):'-';
+  const dot='<span class="dot '+(j.running?'g blink':(j.error?'r':'n'))+'"></span>';
+  const stopBtn=(j.running&&j.id)?'<button class="btn" style="padding:4px 10px;font-size:12px" onclick="cancelJob(\''+kind+'\',\''+esc(j.id)+'\')">Dừng</button>':'';
+  return '<tr><td><b>'+name+'</b></td>'
+    +'<td><span class="jstat '+cls+'">'+dot+st+'</span></td>'
+    +'<td>'+prog+'</td><td>'+(j.workers||'-')+'</td>'
+    +'<td>'+esc(j.by||'-')+'</td><td>'+esc(j.scope||'-')+'</td>'
+    +'<td>'+esc((j.started_at||'').slice(5,16)||'-')+'</td>'
+    +'<td class="mut">'+esc(note||'')+'</td><td>'+stopBtn+'</td></tr>';
+}
+function renderMonitor(m){
+  const b=$('#jt-body');if(!b)return;
+  const jobs=m.jobs||{};
+  const a=m.auto||{};
+  const arow='<tr><td><b>Tự động</b></td>'
+    +'<td><span class="jstat '+(a.enabled?'jrun':'jidle')+'">'+(a.enabled?'Bật':'Tắt')+'</span></td>'
+    +'<td>-</td><td>-</td><td>tự động</td>'
+    +'<td>'+(a.enabled?('mỗi '+a.interval_min+' phút'):'-')+'</td>'
+    +'<td>'+esc((a.last_run||'').slice(5,16)||'-')+'</td>'
+    +'<td class="mut">'+esc(a.last_result||'')+'</td><td></td></tr>';
+  const vomsJobs=jobs.voms&&jobs.voms.length?jobs.voms.map(j=>jrow('VOMS','voms',j)).join(''):jrow('VOMS','voms',{});
+  const cctsJobs=jobs.ccts&&jobs.ccts.length?jobs.ccts.map(j=>jrow('CCTS','ccts',j)).join(''):jrow('CCTS','ccts',{});
+  b.innerHTML=vomsJobs+cctsJobs+arow;
+}
+// Nút thủ công theo dõi đúng job do CHÍNH trang này vừa bấm (qua job_id trả về),
+// không bị lẫn với job của người khác đang chạy song song.
+let TRACK={voms:null,ccts:null};
+function renderJobs(m){  const map=[['voms','#v-bar','#v-stt',['#btn-voms','#btn-voms-miss'],'#btn-voms-stop'],
+             ['ccts','#c-bar','#c-stt',['#btn-ccts','#btn-ccts-miss','#btn-paste'],'#btn-ccts-stop']];
+  for(const [kind,bar,stt,btns,stopSel] of map){
+    const list=(m.jobs||{})[kind]||[];
+    const j=TRACK[kind]?list.find(x=>x.id===TRACK[kind]):null;
+    const pct=j&&j.total?Math.round(j.done/j.total*100):0;
+    if($(bar))$(bar).style.width=(j?pct:0)+'%';
+    btns.forEach(s=>{if($(s))$(s).disabled=!!(j&&j.running)});
+    if($(stopSel))$(stopSel).disabled=!(j&&j.running);
+    if($(stt)){
+      if(j&&j.running)setStt($(stt),'Đang lấy '+j.done+'/'+j.total+' ('+(j.workers||'')+' luồng): '+(j.current||''));
+      else if(j&&j.cancelled)setStt($(stt),'đã dừng theo yêu cầu, khớp '+(j.ok||0)+'/'+(j.done||0)+' đã lấy trước đó','');
+      else if(j&&j.error)setStt($(stt),'dừng: '+j.error,'err');
+      else if(j&&j.finished)setStt($(stt),'xong '+(j.done||0)+'/'+(j.total||0)+', khớp '+(j.ok||0),'ok');
+      else if(list.some(x=>x.running))setStt($(stt),'có lượt khác đang chạy (xem bảng bên trên)…','');
+      else setStt($(stt),'','');
+    }
+  }
+}
+$('#btn-voms-stop').onclick=()=>{if(TRACK.voms)cancelJob('voms',TRACK.voms)};
+$('#btn-ccts-stop').onclick=()=>{if(TRACK.ccts)cancelJob('ccts',TRACK.ccts)};
+async function loadMeta(){
+  const m=await api('/api/meta');
+  try{const h=await api('/api/admin/health');CREDS_CACHE=h.creds;renderHealth(h.health,h.creds)}catch(e){}
+  renderAuto(m);renderJobs(m);renderMonitor(m);
+  return m;
+}
+// Nhịp nhẹ 1.5s: chỉ đọc /api/meta để cập nhật tiến trình + health cho mọi người đang xem.
+async function tick(){
+  try{const m=await api('/api/meta');renderHealth(m.health,CREDS_CACHE);renderAuto(m);renderJobs(m);renderMonitor(m)}catch(e){}
+}
+$('#btn-health').onclick=async()=>{$('#btn-health').disabled=true;setStt($('#auto-stt'),'Đang kiểm tra...');
+  try{const h=await api('/api/admin/health?live=1');renderHealth(h.health,h.creds);setStt($('#auto-stt'),'đã kiểm tra','ok')}
+  catch(e){setStt($('#auto-stt'),'lỗi: '+e.message,'err')}finally{$('#btn-health').disabled=false}};
+$('#btn-auto').onclick=async()=>{try{await api('/api/admin/auto',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({enabled:$('#auto-on').checked,interval_min:+$('#auto-int').value||20})});setStt($('#auto-stt'),'đã lưu','ok');loadMeta()}
+  catch(e){setStt($('#auto-stt'),'lỗi: '+e.message,'err')}};
+
+// copy / view credential scripts
+document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{
+  const t=await (await fetch(b.dataset.copy)).text();
+  const ok=await copyText(t);const s=b.parentElement.querySelector('[data-s]');if(s)s.textContent=ok?'đã copy':'lỗi copy';
+});
+document.querySelectorAll('[data-view]').forEach(async pre=>{try{pre.textContent=await (await fetch(pre.dataset.view)).text()}catch(e){}});
+
+$('#btn-creds').onclick=async()=>{setStt($('#creds-stt'),'Đang lưu và kiểm tra...');
+  try{const d=await api('/api/admin/creds',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({voms_token:$('#v-tok').value,voms_tenant:$('#v-ten').value,ccts_token:$('#c-tok').value,ccts_cookie:$('#c-ck').value})});
+    renderHealth(d.health,d.creds);['#v-tok','#v-ten','#c-tok','#c-ck'].forEach(s=>$(s).value='');
+    setStt($('#creds-stt'),'đã lưu, xem trạng thái ở trên','ok')}
+  catch(e){setStt($('#creds-stt'),'lỗi: '+e.message,'err')}};
+
+$('#btn-import').onclick=async()=>{
+  const f=$('#file').files[0];if(!f){setStt($('#import-stt'),'Chọn file .xlsx.','err');return}
+  const fd=new FormData();fd.append('file',f);setStt($('#import-stt'),'Đang import...');
+  try{const d=await api('/api/import',{method:'POST',body:fd});
+    let html=Object.entries(d.by_asp).map(([a,n])=>'<span class="chip"><b>'+esc(a)+'</b>: '+n+'</span>').join('')+'<span class="chip">Tổng: <b>'+d.total+'</b></span>';
+    const un=Object.entries(d.unmapped||{});
+    if(un.length)html+='<div style="margin-top:6px;color:var(--warn);font-size:12.5px">Chưa nhận ra tỉnh: '+un.map(([k,n])=>esc(k)+' ('+n+')').join(', ')+'</div>';
+    $('#import-sum').innerHTML=html;
+    setStt($('#import-stt'),'Sheet "'+d.sheet+'", cột "'+d.id_col+'", '+d.total+' ticket','ok');
+    await renderIds();
+  }catch(e){setStt($('#import-stt'),'lỗi: '+e.message,'err')}};
+async function renderIds(){
+  const d=await api('/api/ids');const box=$('#ids-lines');box.innerHTML='';
+  const mk=(label,arr)=>{if(!arr.length)return;const div=document.createElement('div');div.className='copyline';
+    div.innerHTML='<button class="btn">Copy '+esc(label)+' ('+arr.length+')</button><span class="mut"></span>';
+    div.querySelector('button').onclick=async()=>{const ok=await copyText(arr.join('\n'));div.querySelector('span').textContent=ok?'đã copy':'lỗi'};
+    box.appendChild(div)};
+  mk('tất cả',d.all);Object.entries(d.by_asp).forEach(([a,arr])=>mk('ASP '+a,arr));mk('chưa rõ ASP',d.unmapped);
+  $('#ids-box').style.display=d.all.length?'':'none';
+}
+async function startVoms(only){try{const d=await api('/api/voms/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:'',tenant:'',workers:workers(),only_missing:only})});TRACK.voms=d.job_id;tick()}
+  catch(e){setStt($('#v-stt'),'lỗi: '+e.message,'err')}}
+$('#btn-voms').onclick=()=>startVoms(false);
+$('#btn-voms-miss').onclick=()=>startVoms(true);
+async function startCcts(only){try{const d=await api('/api/ccts/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:'',cookie:'',workers:workers(),only_missing:only})});TRACK.ccts=d.job_id;tick()}
+  catch(e){setStt($('#c-stt'),'lỗi: '+e.message,'err')}}
+$('#btn-ccts').onclick=()=>startCcts(false);
+$('#btn-ccts-miss').onclick=()=>startCcts(true);
+$('#btn-paste').onclick=async()=>{try{const d=await api('/api/ccts/paste',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tsv:$('#c-tsv').value})});
+  setStt($('#c-stt'),'nạp '+d.updated+'/'+d.parsed+' dòng','ok');$('#c-tsv').value='';tick()}
+  catch(e){setStt($('#c-stt'),'lỗi: '+e.message,'err')}};
+
+async function keyOk(k){try{const r=await fetch('/api/admin/check',{headers:{'X-Admin-Key':k}});return r.ok}catch(e){return false}}
+function showLock(){
+  return new Promise(res=>{
+    const lk=$('#lock');lk.style.display='flex';$('#lock-pass').value='';$('#lock-stt').textContent='';
+    const submit=async()=>{const k=$('#lock-pass').value;if(!k)return;
+      $('#lock-stt').textContent='Đang kiểm tra...';
+      if(await keyOk(k)){localStorage.setItem('tt_admin',k);lk.style.display='none';res(true)}
+      else{$('#lock-stt').textContent='Sai mật khẩu.';$('#lock-pass').select()}};
+    $('#lock-btn').onclick=submit;
+    $('#lock-pass').onkeydown=e=>{if(e.key==='Enter')submit()};
+    setTimeout(()=>$('#lock-pass').focus(),50);
+  });
+}
+async function gate(){
+  let meta;try{meta=await (await fetch('/api/meta')).json()}catch(e){meta={admin_locked:true}}
+  if(!meta.admin_locked) return true;
+  if(akey() && await keyOk(akey())) return true;   // đã lưu mật khẩu -> vào thẳng
+  return await showLock();
+}
+(async()=>{
+  if(await gate()){
+    $('#page').style.display='';
+    loadMeta().catch(e=>console.error(e));
+    setInterval(tick,1500);
+    setInterval(()=>loadMeta().catch(()=>{}),30000);
+  }
+})();
+</script>
+</body>
+</html>

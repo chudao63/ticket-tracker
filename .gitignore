@@ -1,0 +1,9 @@
+creds.local.json
+__pycache__/
+*.pyc
+ticket_tracker.db
+ticket_tracker.db-shm
+ticket_tracker.db-wal
+server.log
+.agents/
+.claude/
