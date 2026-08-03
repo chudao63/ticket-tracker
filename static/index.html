@@ -158,6 +158,7 @@ tr.band-over.hl .rc{color:var(--over)}
 </header>
 
 <div class="wrap" style="padding-top:14px;padding-bottom:40px">
+  <div class="tabs" id="view-tabs" style="margin-bottom:6px"></div>
   <div class="toolbar">
     <input type="text" id="q" placeholder="Tìm RC / trạm / tỉnh" style="width:230px">
     <label class="mut" style="font-size:12px;display:flex;align-items:center;gap:5px">Gán KTV
@@ -165,7 +166,6 @@ tr.band-over.hl .rc{color:var(--over)}
     </label>
     <label class="toggle"><input type="checkbox" id="f-due-over"> Quá hạn</label>
     <label class="toggle"><input type="checkbox" id="f-due-soon"> Sắp tới hạn (12h)</label>
-    <label class="toggle"><input type="checkbox" id="f-due-done"> Đã đóng</label>
     <select id="f-level">
       <option value="">Cảnh báo: tất cả</option>
       <option value="action">Đóng được / cần thao tác</option>
@@ -260,12 +260,20 @@ function fresh(){
   $('#f-job').innerHTML=parts.length?'<span class="auto-on">Đang cập nhật: '+parts.join(' · ')+'</span>':'';
 }
 function renderTabs(){
-  const box=$('#tabs');box.innerHTML='';
+  const box=$('#tabs');
   const asps=['',...(META.asps||[])];
   const label=a=>a===''?'Tất cả':(myCse()?myCse()+' - '+a:a);
-  asps.forEach(a=>{const d=document.createElement('div');d.className='tab'+(a===ASP?' active':'');
-    d.innerHTML=esc(label(a))+' <span class="c" data-c="'+a+'"></span>';
-    d.onclick=()=>{ASP=a;renderTabs();load()};box.appendChild(d)});
+  // Chỉ dựng lại DOM khi danh sách ASP/tên CSE thực sự đổi — tránh xoá trắng
+  // số đếm mỗi 15s refresh rồi phải chờ điền lại (gây cảm giác nhấp nháy).
+  const key=asps.join('|')+'::'+myCse();
+  if(box.dataset.key!==key){
+    box.innerHTML='';
+    asps.forEach(a=>{const d=document.createElement('div');d.className='tab';d.dataset.asp=a;
+      d.innerHTML=esc(label(a))+' <span class="c" data-c="'+a+'"></span>';
+      d.onclick=()=>{ASP=a;renderTabs();load()};box.appendChild(d)});
+    box.dataset.key=key;
+  }
+  box.querySelectorAll('.tab').forEach(d=>d.classList.toggle('active',d.dataset.asp===ASP));
 }
 function qsBase(a){const p=new URLSearchParams();if(myCse())p.set('cse',myCse());if(a)p.set('asp',a);return p.toString()}
 function qs(){const p=new URLSearchParams();
@@ -278,12 +286,15 @@ async function loadMeta(){META=await api('/api/meta');
   fill($('#cse'),META.cses);$('#cse').value=myCse();fresh();renderTabs();updMineBtn();
 }
 async function updateTabCounts(){
-  for(const el of document.querySelectorAll('.tab .c')){
+  // Gọi song song thay vì từng tab một — trước đây tuần tự nên số hiện ra
+  // từ từ từng cái, trông như nhấp nháy mỗi lần refresh.
+  const els=[...document.querySelectorAll('#tabs .tab .c')];
+  await Promise.all(els.map(async el=>{
     try{el.textContent=(await api('/api/tickets?'+qsBase(el.dataset.c))).count}catch(e){}
-  }
+  }));
 }
 async function load(){
-  const d=await api('/api/tickets?'+qs());TICKETS=d.tickets;populateStatus();render();updateTabCounts().catch(()=>{});
+  const d=await api('/api/tickets?'+qs());TICKETS=d.tickets;populateStatus();renderViewTabs();render();updateTabCounts().catch(()=>{});
   $('#f-live').textContent='bảng lúc '+new Date().toLocaleTimeString('vi').slice(0,5);
 }
 const ES='\u0000';                         // giá trị đại diện cho trạng thái "chưa lấy" (trống)
@@ -322,12 +333,29 @@ function statusFiltered(){
     (CSTATUS_SEL.size===0||CSTATUS_SEL.has(effVal(t.ccts_status))));
 }
 function dueMatch(t){
-  const anyChecked=$('#f-due-over').checked||$('#f-due-soon').checked||$('#f-due-done').checked;
+  const anyChecked=$('#f-due-over').checked||$('#f-due-soon').checked;
   if(!anyChecked)return true;
   if($('#f-due-over').checked&&t.overdue)return true;
   if($('#f-due-soon').checked&&!t.overdue&&t.remain_min!=null&&t.remain_min<=720&&!t.closed_both)return true;
-  if($('#f-due-done').checked&&t.closed_both)return true;
   return false;
+}
+// Đang xử lý = VOMS chưa đóng. VOMS đã đóng & chờ CCTS = VOMS đóng nhưng CCTS chưa đóng.
+// Ticket đã đóng cả 2 bên coi như xong hẳn — ẩn khỏi cả 2 view, không hiện ở đâu nữa.
+function vomsClosed(t){const n=(t.voms_status||'').toLowerCase();return n==='đóng'||n==='đã huỷ'}
+let VIEW='active';
+function viewMatch(t){
+  const closed=vomsClosed(t);
+  if(VIEW==='voms_closed')return closed&&!t.closed_both;
+  return !closed;
+}
+function renderViewTabs(){
+  const box=$('#view-tabs');
+  const nActive=TICKETS.filter(t=>!vomsClosed(t)).length;
+  const nVomsClosed=TICKETS.filter(t=>vomsClosed(t)&&!t.closed_both).length;
+  box.innerHTML=
+    '<div class="tab'+(VIEW==='active'?' active':'')+'" data-v="active">Đang xử lý <span class="c">'+nActive+'</span></div>'
+    +'<div class="tab'+(VIEW==='voms_closed'?' active':'')+'" data-v="voms_closed">VOMS đã đóng · chờ CCTS <span class="c">'+nVomsClosed+'</span></div>';
+  box.querySelectorAll('.tab').forEach(d=>d.onclick=()=>{VIEW=d.dataset.v;renderViewTabs();render()});
 }
 function dateMatch(t){
   const from=$('#f-date-from').value, to=$('#f-date-to').value;
@@ -369,7 +397,7 @@ function renderPairs(){
 }
 function render(){
   const hideDone=$('#t-hidedone').checked,hl=$('#t-hl').checked;
-  let rows=statusFiltered().filter(dueMatch).filter(dateMatch).filter(t=>!(hideDone&&t.closed_both));
+  let rows=statusFiltered().filter(dueMatch).filter(dateMatch).filter(viewMatch).filter(t=>!(hideDone&&t.closed_both));
   FILTERED_KEYS=rows.map(t=>t.rc_key);
   const nOver=rows.filter(t=>t.overdue).length;
   const nSoon=rows.filter(t=>!t.overdue&&t.remain_min!=null&&t.remain_min<=720&&!t.closed_both).length;
@@ -435,7 +463,7 @@ $('#update-mine-stop').onclick=async()=>{
 };
 $('#f-level').onchange=load;
 $('#t-hl').onchange=render;$('#t-hidedone').onchange=render;
-$('#f-due-over').onchange=render;$('#f-due-soon').onchange=render;$('#f-due-done').onchange=render;
+$('#f-due-over').onchange=render;$('#f-due-soon').onchange=render;
 $('#f-date-from').onchange=render;$('#f-date-to').onchange=render;
 function toggleMsel(sel){
   const opening=$(sel).style.display==='none'||!$(sel).style.display;

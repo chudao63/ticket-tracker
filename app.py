@@ -25,7 +25,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -188,6 +188,7 @@ ID_COL_CANDIDATES = ["ID Yêu cầu", "Mã yêu cầu", "Mã RC", "External Tick
                      "External Ticket ID", "Third Ticket ID", "Mã ticket", "Ticket ID", "RC"]
 PROVINCE_COL_CANDIDATES = ["Tỉnh/Thành phố", "Tỉnh thành", "Tỉnh", "Province"]
 STATION_COL_CANDIDATES = ["Mã trạm", "Station", "Mã trụ"]
+STATUS_COL_CANDIDATES = ["Trạng thái", "Status"]
 
 
 def find_col_fuzzy(cols, candidates):
@@ -483,9 +484,9 @@ VOMS_API = "https://voms-api.vgreen.net/api/v1/repair-cases"
 VOMS_EXPORT_API = "https://voms-api.vgreen.net/api/v1/repair-cases/export"
 VOMS_EXPORT_HISTORY_API = "https://voms-api.vgreen.net/api/v1/export-history"
 # Tự phát hiện ticket mới bằng export VOMS (thay vì chờ ai đó tải Excel tay).
-# 4 ngày là tạm thời — sau này sẽ tăng lên theo tháng (~50k ticket/lần), lúc đó
-# cần tính lại việc merge theo lô để không khoá DB quá lâu 1 lượt.
-DISCOVER_DAYS_BACK = 4
+# Quét từ mốc cố định này tới hiện tại — khoảng ngày tự giãn ra theo thời gian,
+# không cần sửa tay. VOMS đã cải thiện tốc độ nên mở rộng từ 4 ngày lên cả tháng.
+DISCOVER_SINCE_DATE = date(2026, 7, 1)
 DISCOVER_INTERVAL_MIN = 30  # thưa hơn nhịp refresh status vì export là thao tác nặng hơn phía VOMS
 DISCOVER_STATE = {"last_run": "", "last_result": "", "running": False}
 VOMS_STATUS_VI = {
@@ -533,7 +534,7 @@ def voms_trigger_export(headers, days_back):
     return since
 
 
-def voms_wait_export_link(headers, since, timeout_s=90, poll_every=3):
+def voms_wait_export_link(headers, since, timeout_s=240, poll_every=3):
     """Chờ job export tạo lúc `since` chuyển sang completed, trả về downloadLink.
     export-history trả về mới nhất trước -> gặp job cũ hơn since (trừ hao 10s vì
     createdAt của VOMS có thể lệch mili-giây so với lúc mình gọi) thì dừng tìm sớm."""
@@ -1049,7 +1050,7 @@ def meta():
 def _parse_master_bytes(content):
     """Đọc file tổng (.xlsx) -> (sheet_name, id_col, rows, unmapped). Dùng chung
     cho cả import tay (/api/import) lẫn tự phát hiện ticket mới từ export VOMS.
-    rows: list (rc_key, rc, province_name, pcode, asp, cses_json, station)."""
+    rows: list (rc_key, rc, province_name, pcode, asp, cses_json, station, voms_status_raw)."""
     try:
         sheets = pd.read_excel(BytesIO(content), sheet_name=None)
     except Exception as e:
@@ -1068,6 +1069,7 @@ def _parse_master_bytes(content):
         raise HTTPException(400, f"Sheet '{sheet_name}' không có cột mã ticket. "
                             f"Các cột: {', '.join(map(str, df.columns))}")
     station_col = find_col_fuzzy(list(df.columns), STATION_COL_CANDIDATES)
+    status_col = find_col_fuzzy(list(df.columns), STATUS_COL_CANDIDATES)
 
     rows, seen, unmapped = [], set(), {}
     for _, r in df.iterrows():
@@ -1085,13 +1087,14 @@ def _parse_master_bytes(content):
         prov_str = "" if (prov_raw is None or (isinstance(prov_raw, float) and pd.isna(prov_raw))) \
             else str(prov_raw).strip()
         station = str(r[station_col]).strip() if station_col is not None and not pd.isna(r[station_col]) else ""
+        status_raw = str(r[status_col]).strip() if status_col is not None and not pd.isna(r[status_col]) else ""
         pcode = province_code_of(prov_raw, station)
         asp = ASP_BY_CODE.get(pcode, "")
         pname, cses = PROVINCE_DATA.get(pcode, (prov_str, []))
         if not pcode:
             key = prov_str or "(trống)"
             unmapped[key] = unmapped.get(key, 0) + 1
-        rows.append((k, rc, pname, pcode, asp, json.dumps(cses, ensure_ascii=False), station))
+        rows.append((k, rc, pname, pcode, asp, json.dumps(cses, ensure_ascii=False), station, status_raw))
     if not rows:
         raise HTTPException(400, f"Cột '{id_col}' không có mã nào.")
     return sheet_name, id_col, rows, unmapped
@@ -1104,7 +1107,7 @@ async def import_master(file: UploadFile = File(...)):
     ts = now_str()
     with db() as c:
         c.execute("UPDATE tickets SET active=0")
-        for k, rc, pname, pcode, asp, cses, station in rows:
+        for k, rc, pname, pcode, asp, cses, station, _status_raw in rows:
             c.execute("""INSERT INTO tickets(rc_key, rc, province, pcode, asp, cses, station, active, updated_at)
                          VALUES(?,?,?,?,?,?,?,1,?)
                          ON CONFLICT(rc_key) DO UPDATE SET
@@ -1126,10 +1129,15 @@ def _merge_new_tickets(content):
     là nguồn thay thế hoàn toàn như import tay."""
     sheet_name, _id_col, rows, unmapped = _parse_master_bytes(content)
     ts = now_str()
-    new_count = 0
+    new_count = skipped_closed = 0
     with DB_WRITE_LOCK, db() as c:
         existing = {r["rc_key"] for r in c.execute("SELECT rc_key FROM tickets")}
-        for k, rc, pname, pcode, asp, cses, station in rows:
+        for k, rc, pname, pcode, asp, cses, station, status_raw in rows:
+            # Bỏ qua ngay từ bước phát hiện nếu VOMS trong file export đã "Đóng"/
+            # "Đã huỷ" — case này coi như xong, không cần thêm/cập nhật gì nữa.
+            if _vgroup(status_raw) in ("closed", "cancelled"):
+                skipped_closed += 1
+                continue
             if k not in existing:
                 new_count += 1
             # File export theo khoảng ngày của VOMS đôi khi trả về Tỉnh/Mã trạm TRỐNG
@@ -1149,18 +1157,21 @@ def _merge_new_tickets(content):
                            cses=CASE WHEN excluded.cses NOT IN ('', '[]') THEN excluded.cses ELSE tickets.cses END,
                            active=1, updated_at=excluded.updated_at""",
                       (k, rc, pname, pcode, asp, cses, station, ts))
-    return {"sheet": sheet_name, "scanned": len(rows), "new": new_count, "unmapped": unmapped}
+    return {"sheet": sheet_name, "scanned": len(rows), "new": new_count,
+            "skipped_closed": skipped_closed, "unmapped": unmapped}
 
 
-def _voms_discover_new(token, tenant, days_back=DISCOVER_DAYS_BACK):
+def _voms_discover_new(token, tenant, days_back=None):
     """Tự phát hiện ticket mới: gọi export VOMS theo khoảng ngày, chờ xong, tải
     file, merge (chỉ thêm/cập nhật, không tắt ticket khác). Không dùng cơ chế
     JOBS/job_id vì đây là thao tác nhanh 1 lần, không phải job lấy status hàng loạt."""
+    if days_back is None:
+        days_back = max(1, (vn_now().date() - DISCOVER_SINCE_DATE).days + 1)
     headers = voms_headers(token, tenant)
     since = voms_trigger_export(headers, days_back)
     link = voms_wait_export_link(headers, since)
     if not link:
-        raise RuntimeError("Export VOMS không xong trong thời gian chờ (90s).")
+        raise RuntimeError("Export VOMS không xong trong thời gian chờ (240s).")
     r = requests.get(link, timeout=60)
     r.raise_for_status()
     return _merge_new_tickets(r.content)
@@ -1178,7 +1189,8 @@ def _run_discover_now(by="tự động"):
         try:
             res = _voms_discover_new(CREDS["voms"]["token"], CREDS["voms"]["tenant"])
             extra = f", chưa rõ tỉnh {sum(res['unmapped'].values())}" if res["unmapped"] else ""
-            DISCOVER_STATE["last_result"] = f"({by}) quét {res['scanned']}, mới {res['new']}{extra}"
+            skip = f", bỏ qua {res['skipped_closed']} đã đóng" if res.get("skipped_closed") else ""
+            DISCOVER_STATE["last_result"] = f"({by}) quét {res['scanned']}, mới {res['new']}{skip}{extra}"
         except Exception as e:
             DISCOVER_STATE["last_result"] = f"({by}) lỗi: " + str(e)[:200]
         finally:
