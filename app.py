@@ -440,8 +440,19 @@ def init_db():
         """)
 
 
+# Toàn bộ giờ hiển thị/tính hạn trong app đều tính theo giờ Việt Nam (UTC+7 cố
+# định, không có DST) — không dựa vào múi giờ hệ điều hành. Bắt buộc phải vậy vì
+# chạy trên Railway/Render container mặc định UTC, khác múi giờ máy Windows cũ
+# (dùng datetime.now() suông sẽ lệch 7 tiếng, sai luôn cả tính "quá hạn").
+VN_TZ = timezone(timedelta(hours=7))
+
+
+def vn_now():
+    return datetime.now(VN_TZ).replace(tzinfo=None)
+
+
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return vn_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 # =========================================================
@@ -873,7 +884,7 @@ def _auto_loop():
             due_discover = True
             if DISCOVER_STATE["last_run"]:
                 dt = datetime.strptime(DISCOVER_STATE["last_run"], "%Y-%m-%d %H:%M:%S")
-                due_discover = (datetime.now() - dt).total_seconds() >= DISCOVER_INTERVAL_MIN * 60
+                due_discover = (vn_now() - dt).total_seconds() >= DISCOVER_INTERVAL_MIN * 60
             if due_discover:
                 _run_discover_now(by="tự động")
             # Tự động chỉ bỏ qua nếu đã có job "tự động"/thủ công cùng loại đang chạy
@@ -885,7 +896,7 @@ def _auto_loop():
             due = True
             if last:
                 dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
-                due = (datetime.now() - dt).total_seconds() >= AUTO["interval_min"] * 60
+                due = (vn_now() - dt).total_seconds() >= AUTO["interval_min"] * 60
             if not due:
                 continue
             AUTO["last_run"] = now_str()
@@ -1144,7 +1155,7 @@ def list_tickets(cse: str = "", asp: str = "", search: str = "", level: str = ""
             notes_count[n["rc_key"]] = notes_count.get(n["rc_key"], 0) + 1
     out = []
     q = norm_key(search) if search else ""
-    now = datetime.now()
+    now = vn_now()
     for r in rows:
         cses = json.loads(r["cses"] or "[]")
         if cse and cse not in cses:
@@ -1385,7 +1396,7 @@ def export_xlsx(cse: str = "", asp: str = "", level: str = "", overdue: str = ""
                 ws.set_column(idx, idx, min(width + 2, 60))
     out.seek(0)
     tag = ("_" + cse) if cse else (("_" + asp) if asp else "")
-    fn = f"bang_theo_doi{tag}_{datetime.now().date().isoformat()}.xlsx"
+    fn = f"bang_theo_doi{tag}_{vn_now().date().isoformat()}.xlsx"
     return Response(out.getvalue(),
                     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{fn}"'})
