@@ -55,6 +55,7 @@ DATA_DIR = Path(os.environ.get("TICKET_DATA_DIR", str(BASE_DIR)))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "ticket_tracker.db"
 CREDS_FILE = DATA_DIR / "creds.local.json"
+AUTO_FILE = DATA_DIR / "auto.local.json"
 
 # =========================================================
 #  DỮ LIỆU TỈNH -> CSE  +  TỈNH -> ASP (SE/EC/ITS/ES)
@@ -270,6 +271,31 @@ def _load_creds_file():
                 CREDS[kind].update(data[kind])
     except Exception as e:
         print("Không đọc được creds.local.json:", e)
+
+
+def _persist_auto():
+    """Lưu bật/tắt tự cập nhật + số phút xuống auto.local.json — không thì mỗi
+    lần restart/redeploy là 'Tự cập nhật' tự về Tắt, phải vào bật lại tay."""
+    try:
+        AUTO_FILE.write_text(
+            json.dumps({"enabled": AUTO["enabled"], "interval_min": AUTO["interval_min"]},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception as e:
+        print("Không ghi được auto.local.json:", e)
+
+
+def _load_auto_file():
+    if not AUTO_FILE.exists():
+        return
+    try:
+        data = json.loads(AUTO_FILE.read_text(encoding="utf-8"))
+        if "enabled" in data:
+            AUTO["enabled"] = bool(data["enabled"])
+        if "interval_min" in data:
+            AUTO["interval_min"] = max(5, int(data["interval_min"]))
+    except Exception as e:
+        print("Không đọc được auto.local.json:", e)
 
 
 # =========================================================
@@ -1297,6 +1323,7 @@ def health(live: int = 0):
 def set_auto(body: AutoIn):
     AUTO["enabled"] = bool(body.enabled)
     AUTO["interval_min"] = max(5, int(body.interval_min or 20))
+    _persist_auto()
     return {"auto": AUTO}
 
 
@@ -1378,6 +1405,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 init_db()
 _load_creds_file()
+_load_auto_file()
 threading.Thread(target=_auto_loop, daemon=True).start()
 
 if __name__ == "__main__":

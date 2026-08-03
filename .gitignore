@@ -1,4 +1,5 @@
 creds.local.json
+auto.local.json
 __pycache__/
 *.pyc
 ticket_tracker.db
