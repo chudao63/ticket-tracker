@@ -25,7 +25,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -422,6 +422,14 @@ def now_str():
 #  VOMS API
 # =========================================================
 VOMS_API = "https://voms-api.vgreen.net/api/v1/repair-cases"
+VOMS_EXPORT_API = "https://voms-api.vgreen.net/api/v1/repair-cases/export"
+VOMS_EXPORT_HISTORY_API = "https://voms-api.vgreen.net/api/v1/export-history"
+# Tự phát hiện ticket mới bằng export VOMS (thay vì chờ ai đó tải Excel tay).
+# 4 ngày là tạm thời — sau này sẽ tăng lên theo tháng (~50k ticket/lần), lúc đó
+# cần tính lại việc merge theo lô để không khoá DB quá lâu 1 lượt.
+DISCOVER_DAYS_BACK = 4
+DISCOVER_INTERVAL_MIN = 30  # thưa hơn nhịp refresh status vì export là thao tác nặng hơn phía VOMS
+DISCOVER_STATE = {"last_run": "", "last_result": ""}
 VOMS_STATUS_VI = {
     "pending": "Chờ xử lý", "assigned": "Đã phân công", "accepted": "KTV đã nhận",
     "in_progress": "Đang xử lý", "processing": "Đang xử lý", "completed": "Hoàn công",
@@ -452,6 +460,44 @@ def voms_get_one(session, rc, headers):
             last = str(e)[:200]
             time.sleep(1.2 * (attempt + 1))
     return None, (last or "lỗi mạng")
+
+
+def voms_trigger_export(headers, days_back):
+    """Kêu VOMS tạo file export (bất đồng bộ, trả 202 ngay). Trả lại mốc thời
+    gian (UTC) lúc gọi để _voms_wait_export_link biết job nào là job vừa tạo."""
+    since = datetime.now(timezone.utc).replace(tzinfo=None)
+    end = since + timedelta(days=1)          # dư 1 ngày phòng lệch giờ/timezone
+    start = since - timedelta(days=days_back)
+    params = {"startDate": start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+              "endDate": end.strftime("%Y-%m-%dT%H:%M:%S.999Z")}
+    r = requests.get(VOMS_EXPORT_API, params=params, headers=headers, timeout=20)
+    r.raise_for_status()
+    return since
+
+
+def voms_wait_export_link(headers, since, timeout_s=90, poll_every=3):
+    """Chờ job export tạo lúc `since` chuyển sang completed, trả về downloadLink.
+    export-history trả về mới nhất trước -> gặp job cũ hơn since (trừ hao 10s vì
+    createdAt của VOMS có thể lệch mili-giây so với lúc mình gọi) thì dừng tìm sớm."""
+    cutoff = since - timedelta(seconds=10)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            r = requests.get(VOMS_EXPORT_HISTORY_API, headers=headers, timeout=20)
+            if r.ok:
+                for it in (r.json() or {}).get("data") or []:
+                    try:
+                        created = datetime.strptime((it.get("createdAt") or "")[:19], "%Y-%m-%dT%H:%M:%S")
+                    except Exception:
+                        continue
+                    if created < cutoff:
+                        break
+                    if it.get("status") == "completed" and it.get("downloadLink"):
+                        return it["downloadLink"]
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(poll_every)
+    return None
 
 
 # =========================================================
@@ -794,6 +840,22 @@ def _auto_loop():
         try:
             if not AUTO["enabled"] or not CREDS["voms"]["token"]:
                 continue
+            # Phát hiện ticket mới (export VOMS theo khoảng ngày) — nhịp riêng,
+            # thưa hơn refresh status, không phụ thuộc JOBS/_any_running vì đây
+            # chỉ là 1 lượt gọi+merge nhanh, không phải job lấy status hàng loạt.
+            due_discover = True
+            if DISCOVER_STATE["last_run"]:
+                dt = datetime.strptime(DISCOVER_STATE["last_run"], "%Y-%m-%d %H:%M:%S")
+                due_discover = (datetime.now() - dt).total_seconds() >= DISCOVER_INTERVAL_MIN * 60
+            if due_discover:
+                DISCOVER_STATE["last_run"] = now_str()
+                try:
+                    res_d = _voms_discover_new(CREDS["voms"]["token"], CREDS["voms"]["tenant"])
+                    DISCOVER_STATE["last_result"] = (f"quét {res_d['scanned']}, mới {res_d['new']}"
+                                                     + (f", chưa rõ tỉnh {sum(res_d['unmapped'].values())}"
+                                                        if res_d["unmapped"] else ""))
+                except Exception as e:
+                    DISCOVER_STATE["last_result"] = "lỗi: " + str(e)[:200]
             # Tự động chỉ bỏ qua nếu đã có job "tự động"/thủ công cùng loại đang chạy
             # (tránh tự bắn trùng job toàn bộ) — không liên quan tới người dùng
             # đang bấm "cập nhật phần của tôi", các job đó chạy song song bình thường.
@@ -925,9 +987,10 @@ def meta():
             "admin_locked": bool(ADMIN_KEY)}
 
 
-@app.post("/api/import", dependencies=[Depends(require_admin)])
-async def import_master(file: UploadFile = File(...)):
-    content = await file.read()
+def _parse_master_bytes(content):
+    """Đọc file tổng (.xlsx) -> (sheet_name, id_col, rows, unmapped). Dùng chung
+    cho cả import tay (/api/import) lẫn tự phát hiện ticket mới từ export VOMS.
+    rows: list (rc_key, rc, province_name, pcode, asp, cses_json, station)."""
     try:
         sheets = pd.read_excel(BytesIO(content), sheet_name=None)
     except Exception as e:
@@ -967,6 +1030,13 @@ async def import_master(file: UploadFile = File(...)):
         rows.append((k, rc, pname, pcode, asp, json.dumps(cses, ensure_ascii=False), station))
     if not rows:
         raise HTTPException(400, f"Cột '{id_col}' không có mã nào.")
+    return sheet_name, id_col, rows, unmapped
+
+
+@app.post("/api/import", dependencies=[Depends(require_admin)])
+async def import_master(file: UploadFile = File(...)):
+    content = await file.read()
+    sheet_name, id_col, rows, unmapped = _parse_master_bytes(content)
     ts = now_str()
     with db() as c:
         c.execute("UPDATE tickets SET active=0")
@@ -982,6 +1052,44 @@ async def import_master(file: UploadFile = File(...)):
             "SELECT asp, COUNT(*) n FROM tickets WHERE active=1 GROUP BY asp")}
     return {"sheet": sheet_name, "id_col": id_col, "total": len(rows),
             "by_asp": by_asp, "unmapped": unmapped}
+
+
+def _merge_new_tickets(content):
+    """Giống import_master nhưng CHỈ thêm/cập nhật ticket có trong file, không
+    đụng active của ticket khác (không có UPDATE tickets SET active=0). Dùng cho
+    tự động phát hiện ticket mới từ export theo khoảng ngày — file này chỉ chứa
+    1 phần dữ liệu (vd 4 ngày gần nhất), không phải toàn bộ, nên không được coi
+    là nguồn thay thế hoàn toàn như import tay."""
+    sheet_name, _id_col, rows, unmapped = _parse_master_bytes(content)
+    ts = now_str()
+    new_count = 0
+    with db() as c:
+        existing = {r["rc_key"] for r in c.execute("SELECT rc_key FROM tickets")}
+        for k, rc, pname, pcode, asp, cses, station in rows:
+            if k not in existing:
+                new_count += 1
+            c.execute("""INSERT INTO tickets(rc_key, rc, province, pcode, asp, cses, station, active, updated_at)
+                         VALUES(?,?,?,?,?,?,?,1,?)
+                         ON CONFLICT(rc_key) DO UPDATE SET
+                           rc=excluded.rc, province=excluded.province, pcode=excluded.pcode,
+                           asp=excluded.asp, cses=excluded.cses, station=excluded.station,
+                           active=1, updated_at=excluded.updated_at""",
+                      (k, rc, pname, pcode, asp, cses, station, ts))
+    return {"sheet": sheet_name, "scanned": len(rows), "new": new_count, "unmapped": unmapped}
+
+
+def _voms_discover_new(token, tenant, days_back=DISCOVER_DAYS_BACK):
+    """Tự phát hiện ticket mới: gọi export VOMS theo khoảng ngày, chờ xong, tải
+    file, merge (chỉ thêm/cập nhật, không tắt ticket khác). Không dùng cơ chế
+    JOBS/job_id vì đây là thao tác nhanh 1 lần, không phải job lấy status hàng loạt."""
+    headers = voms_headers(token, tenant)
+    since = voms_trigger_export(headers, days_back)
+    link = voms_wait_export_link(headers, since)
+    if not link:
+        raise RuntimeError("Export VOMS không xong trong thời gian chờ (90s).")
+    r = requests.get(link, timeout=60)
+    r.raise_for_status()
+    return _merge_new_tickets(r.content)
 
 
 @app.get("/api/tickets")
