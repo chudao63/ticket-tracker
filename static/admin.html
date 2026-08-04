@@ -154,6 +154,21 @@ table.jt td{padding:8px 10px;border-bottom:1px solid #eef0f5;vertical-align:midd
   </div>
 
   <div class="card">
+    <h2>Sao lưu / Khôi phục dữ liệu</h2>
+    <div class="desc">Dùng khi chuyển sang server/deploy khác (vd Railway/Render mới) — tải file DB (ticket + ghi chú + tất cả) về máy, rồi upload lại vào nơi mới qua ô Khôi phục bên dưới.</div>
+    <div class="row" style="align-items:center">
+      <button class="btn" id="btn-backup">Tải xuống file sao lưu (.db)</button>
+      <span class="stt" id="backup-stt"></span>
+    </div>
+    <div class="row" style="align-items:center;margin-top:10px">
+      <input type="file" id="restore-file" accept=".db">
+      <button class="btn" id="btn-restore" style="background:var(--danger);color:#fff">Khôi phục (ghi đè toàn bộ)</button>
+      <span class="stt" id="restore-stt"></span>
+    </div>
+    <div class="mut" style="font-size:12px;margin-top:6px">⚠️ Khôi phục sẽ xoá toàn bộ dữ liệu hiện tại trên server này và thay bằng file upload — không thể hoàn tác, chỉ dùng lúc mới deploy server trống.</div>
+  </div>
+
+  <div class="card">
     <h2>1. Nhập file tổng và chia ASP</h2>
     <div class="desc">Upload file tổng .xlsx, phân tỉnh sang ASP (SE/EC/ITS/ES) và CSE phụ trách. Import lại vẫn giữ nguyên ghi chú.</div>
     <div class="row" style="align-items:center">
@@ -337,6 +352,33 @@ $('#btn-creds').onclick=async()=>{setStt($('#creds-stt'),'Đang lưu và kiểm 
     setStt($('#creds-stt'),'đã lưu, xem trạng thái ở trên','ok')}
   catch(e){setStt($('#creds-stt'),'lỗi: '+e.message,'err')}};
 
+$('#btn-backup').onclick=async()=>{
+  const btn=$('#btn-backup');btn.disabled=true;setStt($('#backup-stt'),'Đang tải...','');
+  try{
+    const r=await fetch('/api/admin/backup',{headers:{'X-Admin-Key':akey()}});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||('HTTP '+r.status))}
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=/filename="([^"]+)"/.exec(cd);
+    const fn=m?m[1]:'ticket_tracker_backup.db';
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=fn;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+    setStt($('#backup-stt'),'đã tải '+fn,'ok');
+  }catch(e){setStt($('#backup-stt'),'lỗi: '+e.message,'err')}
+  finally{btn.disabled=false}
+};
+$('#btn-restore').onclick=async()=>{
+  const f=$('#restore-file').files[0];
+  if(!f){setStt($('#restore-stt'),'Chọn file .db trước.','err');return}
+  if(!confirm('Khôi phục sẽ XOÁ TOÀN BỘ dữ liệu hiện tại trên server này và thay bằng file "'+f.name+'". Không thể hoàn tác. Chắc chắn tiếp tục?'))return;
+  const btn=$('#btn-restore');btn.disabled=true;setStt($('#restore-stt'),'Đang khôi phục...','');
+  try{
+    const fd=new FormData();fd.append('file',f);
+    const d=await api('/api/admin/restore',{method:'POST',body:fd});
+    setStt($('#restore-stt'),'xong — '+d.total+' ticket, '+d.notes+' ghi chú. Tải lại trang để xem.','ok');
+  }catch(e){setStt($('#restore-stt'),'lỗi: '+e.message,'err')}
+  finally{btn.disabled=false}
+};
 $('#btn-import').onclick=async()=>{
   const f=$('#file').files[0];if(!f){setStt($('#import-stt'),'Chọn file .xlsx.','err');return}
   const fd=new FormData();fd.append('file',f);setStt($('#import-stt'),'Đang import...');

@@ -141,7 +141,7 @@ tr.band-over.hl .rc{color:var(--over)}
     <div class="hd">
       <div class="brand">Theo dõi Ticket <span>VOMS / CCTS</span></div>
       <div class="sp"></div>
-      <div class="who"><label>Tôi là</label><select id="cse"><option value="">chọn tên</option></select></div>
+      <div class="who"><label>Tôi là</label><input type="text" id="cse" list="cse-list" placeholder="chọn hoặc gõ tên" autocomplete="off" style="width:150px"><datalist id="cse-list"></datalist></div>
       <button class="tbtn" id="update-mine" disabled>Cập nhật phần của tôi</button>
       <button class="tbtn" id="update-mine-missing" disabled title="Chỉ lấy lại mã đang trống/lỗi trong phần của tôi">Phần còn thiếu của tôi</button>
       <button class="tbtn" id="update-mine-stop" style="display:none;color:var(--danger)">Dừng</button>
@@ -280,8 +280,13 @@ function qs(){const p=new URLSearchParams();
   if($('#f-level').value)p.set('level',$('#f-level').value);
   return p.toString()}
 async function loadMeta(){META=await api('/api/meta');
-  const fill=(sel,items)=>{if(sel.options.length>1)return;items.forEach(x=>{const o=document.createElement('option');o.value=x;o.textContent=x;sel.appendChild(o)})};
-  fill($('#cse'),META.cses);$('#cse').value=myCse();fresh();renderTabs();updMineBtn();
+  // "Tôi là" giờ là ô nhập tự do (không bắt buộc có sẵn trong danh sách) — để
+  // nhà thầu/người ngoài danh sách CSE vẫn tự gõ tên mình vào lưu ghi chú được.
+  // Danh sách CSE sẵn có chỉ để gợi ý (datalist), không giới hạn giá trị nhập.
+  const dl=$('#cse-list');
+  if(!dl.children.length)(META.cses||[]).forEach(x=>{const o=document.createElement('option');o.value=x;dl.appendChild(o)});
+  if(document.activeElement!==$('#cse'))$('#cse').value=myCse();
+  fresh();renderTabs();updMineBtn();
 }
 async function updateTabCounts(){
   // Gọi song song thay vì từng tab một — trước đây tuần tự nên số hiện ra
@@ -392,6 +397,11 @@ function render(){
   let rows;
   if(CHIP.over||CHIP.soon||CHIP.act||CHIP.vclosed){
     rows=base.filter(t=>(CHIP.over&&t.overdue)||(CHIP.soon&&!t.overdue&&t.remain_min!=null&&t.remain_min<=720)||(CHIP.act&&t.flag_level==='action')||(CHIP.vclosed&&vomsClosed(t)));
+  }else if(VSTATUS_SEL.size>0){
+    // Đã chủ động chọn trạng thái VOMS cụ thể (ô multi-select hoặc bấm 1 cặp ở
+    // "Cặp trạng thái") -> tin theo lựa chọn đó, không tự ý ẩn "VOMS đã đóng" nữa
+    // (tránh lặp lại đúng lỗi cũ: chọn tay bị luật mặc định âm thầm đè mất).
+    rows=base;
   }else{
     rows=base.filter(t=>!vomsClosed(t));
   }

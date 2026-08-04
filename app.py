@@ -1427,6 +1427,56 @@ def health(live: int = 0):
                       "ccts": {"has_token": bool(CREDS["ccts"]["token"]), "saved_at": CREDS["ccts"]["saved_at"]}}}
 
 
+@app.get("/api/admin/backup", dependencies=[Depends(require_admin)])
+def admin_backup():
+    """Tải nguyên file DB (ticket + ghi chú + tất cả) về máy — dùng để chuyển
+    dữ liệu sang server khác (vd deploy Railway/Render mới) qua Khôi phục bên dưới."""
+    with DB_WRITE_LOCK, db() as c:
+        # Gộp WAL vào file chính trước khi đọc, để file tải về tự đủ dữ liệu,
+        # không cần mang theo -wal/-shm mới đúng (SQLite chạy chế độ WAL).
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    data = DB_PATH.read_bytes()
+    fn = f"ticket_tracker_backup_{vn_now().strftime('%Y%m%d_%H%M%S')}.db"
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+@app.post("/api/admin/restore", dependencies=[Depends(require_admin)])
+async def admin_restore(file: UploadFile = File(...)):
+    """Ghi đè TOÀN BỘ dữ liệu hiện tại bằng file .db được upload — dùng đúng 1
+    lần lúc mới deploy để mang dữ liệu cũ (ticket + ghi chú) sang. Không thể
+    hoàn tác, FE phải xác nhận trước khi gọi."""
+    content = await file.read()
+    if not content.startswith(b"SQLite format 3\x00"):
+        raise HTTPException(400, "File không đúng định dạng SQLite (.db) hợp lệ.")
+    # Nạp qua API backup() có sẵn của sqlite3 thay vì xoá/ghi đè file .db/-wal/-shm
+    # trực tiếp — tránh hẳn lỗi khoá file kiểu Windows (PermissionError khi 1
+    # connection trước đó chưa kịp nhả file), đồng thời đây cũng là cách chuẩn/an
+    # toàn hơn để "nạp đè" 1 SQLite DB đang có connection khác dùng chung.
+    tmp_path = DATA_DIR / f".restore_tmp_{os.getpid()}.db"
+    tmp_path.write_bytes(content)
+    try:
+        with DB_WRITE_LOCK:
+            src_conn = sqlite3.connect(str(tmp_path))
+            try:
+                dst_conn = sqlite3.connect(str(DB_PATH))
+                try:
+                    src_conn.backup(dst_conn)
+                finally:
+                    dst_conn.close()
+            finally:
+                src_conn.close()
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+    with db() as c:
+        total = c.execute("SELECT COUNT(*) n FROM tickets WHERE active=1").fetchone()["n"]
+        notes = c.execute("SELECT COUNT(*) n FROM notes").fetchone()["n"]
+    return {"ok": True, "size": len(content), "total": total, "notes": notes}
+
+
 @app.post("/api/admin/auto", dependencies=[Depends(require_admin)])
 def set_auto(body: AutoIn):
     AUTO["enabled"] = bool(body.enabled)
