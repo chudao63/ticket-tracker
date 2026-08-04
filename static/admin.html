@@ -106,7 +106,7 @@ table.jt td{padding:8px 10px;border-bottom:1px solid #eef0f5;vertical-align:midd
     <div class="mut" id="auto-last" style="margin-top:6px"></div>
     <div class="row" style="align-items:center;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
       <button class="btn" id="btn-discover">Quét ticket mới ngay</button>
-      <span class="mut" style="font-size:12px">Gọi export VOMS (4 ngày gần nhất), tự thêm ticket mới — không đụng ticket khác.</span>
+      <span class="mut" style="font-size:12px">Sẽ quét export VOMS <b id="discover-range">từ ... đến ...</b> — chỉ thêm ticket mới, không đụng ticket khác.</span>
       <span class="stt" id="discover-stt"></span>
     </div>
     <div class="mut" id="discover-last" style="margin-top:6px"></div>
@@ -235,6 +235,8 @@ function renderAuto(m){
   if(d.running)setStt($('#discover-stt'),'đang quét...','');
   else setStt($('#discover-stt'),'','');
   $('#discover-last').textContent=d.last_run?('Lần quét gần nhất: '+d.last_run+' - '+(d.last_result||'')):'';
+  const dr=m.discover_range;
+  if(dr)$('#discover-range').textContent='từ '+dr.from+' đến '+dr.to;
 }
 $('#btn-discover').onclick=async()=>{
   try{await api('/api/voms/discover',{method:'POST'});setStt($('#discover-stt'),'đang quét...','');tick()}

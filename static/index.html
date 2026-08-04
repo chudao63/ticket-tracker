@@ -54,9 +54,11 @@ select:focus,input:focus{outline:2px solid var(--pri-soft);border-color:var(--pr
 .chips{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 .chip{background:#fff;border:1px solid var(--line);border-radius:var(--r-sm);padding:7px 12px;font-size:13px}
 .chip b{font-size:15px}
-.chip.over{background:var(--danger-bg);border-color:#f3c6c6;color:var(--danger)}
-.chip.soon{background:var(--warn-bg);border-color:#f0d9a8;color:var(--warn)}
-.chip.act{background:var(--action-bg);border-color:#bfe6d3;color:var(--action)}
+.chip.over{background:var(--danger-bg);border-color:#f3c6c6;color:var(--danger);cursor:pointer;user-select:none}
+.chip.soon{background:var(--warn-bg);border-color:#f0d9a8;color:var(--warn);cursor:pointer;user-select:none}
+.chip.act{background:var(--action-bg);border-color:#bfe6d3;color:var(--action);cursor:pointer;user-select:none}
+.chip.vclosed{background:#eef0f4;border-color:#d7dbe4;color:#5c6779;cursor:pointer;user-select:none}
+.chip.selected{box-shadow:inset 0 0 0 2px currentColor;font-weight:700}
 .board{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .tscroll{overflow:auto;max-height:calc(100vh - 300px)}
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:13.5px}
@@ -158,17 +160,13 @@ tr.band-over.hl .rc{color:var(--over)}
 </header>
 
 <div class="wrap" style="padding-top:14px;padding-bottom:40px">
-  <div class="tabs" id="view-tabs" style="margin-bottom:6px"></div>
   <div class="toolbar">
     <input type="text" id="q" placeholder="Tìm RC / trạm / tỉnh" style="width:230px">
     <label class="mut" style="font-size:12px;display:flex;align-items:center;gap:5px">Gán KTV
       <input type="date" id="f-date-from" title="Từ ngày">–<input type="date" id="f-date-to" title="Đến ngày">
     </label>
-    <label class="toggle"><input type="checkbox" id="f-due-over"> Quá hạn</label>
-    <label class="toggle"><input type="checkbox" id="f-due-soon"> Sắp tới hạn (12h)</label>
     <select id="f-level">
-      <option value="">Cảnh báo: tất cả</option>
-      <option value="action">Đóng được / cần thao tác</option>
+      <option value="">Cảnh báo khác: tất cả</option>
       <option value="danger">Lệch / mất dấu</option>
       <option value="warn">Cần kiểm tra</option>
       <option value="info">Theo dõi</option>
@@ -183,10 +181,10 @@ tr.band-over.hl .rc{color:var(--over)}
     </div>
     <button class="btn" id="pairs-btn">Cặp trạng thái</button>
     <label class="toggle"><input type="checkbox" id="t-hl" checked> Tô đậm quá hạn</label>
-    <label class="toggle"><input type="checkbox" id="t-hidedone"> Ẩn đã xong</label>
     <span class="sp"></span>
     <button class="btn" id="export">Xuất Excel</button>
   </div>
+  <div class="mut" style="font-size:12px;margin:-4px 0 10px">Bấm vào ô màu bên dưới (Quá hạn / Sắp tới hạn / Cần thao tác / VOMS đã đóng) để lọc nhanh — bấm lại để bỏ lọc, có thể bật nhiều ô cùng lúc.</div>
   <div id="pairs-panel" style="display:none"></div>
   <div class="chips" id="chips"></div>
   <div class="board">
@@ -294,7 +292,7 @@ async function updateTabCounts(){
   }));
 }
 async function load(){
-  const d=await api('/api/tickets?'+qs());TICKETS=d.tickets;populateStatus();renderViewTabs();render();updateTabCounts().catch(()=>{});
+  const d=await api('/api/tickets?'+qs());TICKETS=d.tickets;populateStatus();render();updateTabCounts().catch(()=>{});
   $('#f-live').textContent='bảng lúc '+new Date().toLocaleTimeString('vi').slice(0,5);
 }
 const ES='\u0000';                         // giá trị đại diện cho trạng thái "chưa lấy" (trống)
@@ -332,31 +330,15 @@ function statusFiltered(){
     (VSTATUS_SEL.size===0||VSTATUS_SEL.has(effVal(t.voms_status)))&&
     (CSTATUS_SEL.size===0||CSTATUS_SEL.has(effVal(t.ccts_status))));
 }
-function dueMatch(t){
-  const anyChecked=$('#f-due-over').checked||$('#f-due-soon').checked;
-  if(!anyChecked)return true;
-  if($('#f-due-over').checked&&t.overdue)return true;
-  if($('#f-due-soon').checked&&!t.overdue&&t.remain_min!=null&&t.remain_min<=720&&!t.closed_both)return true;
-  return false;
-}
-// Đang xử lý = VOMS chưa đóng. VOMS đã đóng & chờ CCTS = VOMS đóng nhưng CCTS chưa đóng.
-// Ticket đã đóng cả 2 bên coi như xong hẳn — ẩn khỏi cả 2 view, không hiện ở đâu nữa.
+// Ticket đã đóng cả 2 bên (VOMS + CCTS) coi như xong hẳn — LUÔN ẩn, không có
+// nút bật lại (đúng yêu cầu: bỏ qua hẳn, không cần xem lại trong app này).
 function vomsClosed(t){const n=(t.voms_status||'').toLowerCase();return n==='đóng'||n==='đã huỷ'}
-let VIEW='active';
-function viewMatch(t){
-  const closed=vomsClosed(t);
-  if(VIEW==='voms_closed')return closed&&!t.closed_both;
-  return !closed;
-}
-function renderViewTabs(){
-  const box=$('#view-tabs');
-  const nActive=TICKETS.filter(t=>!vomsClosed(t)).length;
-  const nVomsClosed=TICKETS.filter(t=>vomsClosed(t)&&!t.closed_both).length;
-  box.innerHTML=
-    '<div class="tab'+(VIEW==='active'?' active':'')+'" data-v="active">Đang xử lý <span class="c">'+nActive+'</span></div>'
-    +'<div class="tab'+(VIEW==='voms_closed'?' active':'')+'" data-v="voms_closed">VOMS đã đóng · chờ CCTS <span class="c">'+nVomsClosed+'</span></div>';
-  box.querySelectorAll('.tab').forEach(d=>d.onclick=()=>{VIEW=d.dataset.v;renderViewTabs();render()});
-}
+// Các chip lọc nhanh — bấm để bật/tắt, kết hợp tự do với ô chọn trạng thái/ngày
+// bên trên (không loại trừ nhau). "VOMS đã đóng" mặc định TẮT (ẩn bớt cho đỡ rối,
+// nhưng bấm vào là hiện ngay trên chính bảng này — không cần đổi tab/trang khác).
+let CHIP={over:false,soon:false,act:false,vclosed:false};
+function toggleChip(k){CHIP[k]=!CHIP[k];render()}
+window.toggleChip=toggleChip;
 function dateMatch(t){
   const from=$('#f-date-from').value, to=$('#f-date-to').value;
   if(!from&&!to)return true;
@@ -396,16 +378,27 @@ function renderPairs(){
   };
 }
 function render(){
-  const hideDone=$('#t-hidedone').checked,hl=$('#t-hl').checked;
-  let rows=statusFiltered().filter(dueMatch).filter(dateMatch).filter(viewMatch).filter(t=>!(hideDone&&t.closed_both));
+  const hl=$('#t-hl').checked;
+  // Luật cứng, luôn áp dụng: bỏ hẳn ticket đã đóng cả 2 bên (VOMS+CCTS) — coi
+  // như xong, không cần thấy lại. Còn lại kết hợp với ô chọn trạng thái/ngày.
+  const base=statusFiltered().filter(dateMatch).filter(t=>!t.closed_both);
+  const nOver=base.filter(t=>t.overdue).length;
+  const nSoon=base.filter(t=>!t.overdue&&t.remain_min!=null&&t.remain_min<=720).length;
+  const nAct=base.filter(t=>t.flag_level==='action').length;
+  const nVc=base.filter(vomsClosed).length;
+  // Mặc định ẩn bớt "VOMS đã đóng · chờ CCTS" cho gọn — bấm chip là hiện ngay
+  // trên chính bảng này, không cần đổi trang/tab nào khác.
+  let rows=base.filter(t=>vomsClosed(t)?CHIP.vclosed:true);
+  if(CHIP.over||CHIP.soon||CHIP.act){
+    rows=rows.filter(t=>(CHIP.over&&t.overdue)||(CHIP.soon&&!t.overdue&&t.remain_min!=null&&t.remain_min<=720)||(CHIP.act&&t.flag_level==='action'));
+  }
   FILTERED_KEYS=rows.map(t=>t.rc_key);
-  const nOver=rows.filter(t=>t.overdue).length;
-  const nSoon=rows.filter(t=>!t.overdue&&t.remain_min!=null&&t.remain_min<=720&&!t.closed_both).length;
-  const nAct=rows.filter(t=>t.flag_level==='action').length;
+  const chip=(key,cls,label,n)=>'<div class="chip '+cls+(CHIP[key]?' selected':'')+'" onclick="toggleChip(\''+key+'\')">'+label+' <b>'+n+'</b></div>';
   $('#chips').innerHTML='<div class="chip">Hiển thị <b>'+rows.length+'</b></div>'
-    +(nOver?'<div class="chip over">Quá hạn <b>'+nOver+'</b></div>':'')
-    +(nSoon?'<div class="chip soon">Sắp tới hạn <b>'+nSoon+'</b></div>':'')
-    +(nAct?'<div class="chip act">Đóng được / cần thao tác <b>'+nAct+'</b></div>':'');
+    +chip('over','over','Quá hạn',nOver)
+    +chip('soon','soon','Sắp tới hạn',nSoon)
+    +chip('act','act','Đóng được / cần thao tác',nAct)
+    +chip('vclosed','vclosed','VOMS đã đóng · chờ CCTS',nVc);
   const tb=$('#tb');
   if(!rows.length){tb.innerHTML='<tr><td colspan="9" class="empty-row">Không có ticket khớp bộ lọc.</td></tr>';return}
   tb.innerHTML='';
@@ -462,8 +455,7 @@ $('#update-mine-stop').onclick=async()=>{
   }
 };
 $('#f-level').onchange=load;
-$('#t-hl').onchange=render;$('#t-hidedone').onchange=render;
-$('#f-due-over').onchange=render;$('#f-due-soon').onchange=render;
+$('#t-hl').onchange=render;
 $('#f-date-from').onchange=render;$('#f-date-to').onchange=render;
 function toggleMsel(sel){
   const opening=$(sel).style.display==='none'||!$(sel).style.display;

@@ -1041,9 +1041,13 @@ def meta():
         "voms": sorted(JOBS["voms"].values(), key=lambda j: j["started_at"], reverse=True),
         "ccts": sorted(JOBS["ccts"].values(), key=lambda j: j["started_at"], reverse=True),
     }
+    # Khoảng ngày mà "Quét ticket mới" đang/sẽ quét — từ mốc cố định tới hiện tại,
+    # tự giãn ra theo ngày. Cho FE hiện rõ ràng thay vì để bạn phải đoán.
+    discover_range = {"from": DISCOVER_SINCE_DATE.isoformat(), "to": vn_now().date().isoformat()}
     return {"cses": ALL_CSES, "asps": ASPS, "total": total, "by_asp": by_asp,
             "voms_updated": vt, "ccts_updated": ct,
             "jobs": jobs_view, "auto": AUTO, "health": HEALTH, "discover": DISCOVER_STATE,
+            "discover_range": discover_range,
             "admin_locked": bool(ADMIN_KEY)}
 
 
