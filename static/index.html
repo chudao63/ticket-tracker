@@ -386,11 +386,14 @@ function render(){
   const nSoon=base.filter(t=>!t.overdue&&t.remain_min!=null&&t.remain_min<=720).length;
   const nAct=base.filter(t=>t.flag_level==='action').length;
   const nVc=base.filter(vomsClosed).length;
-  // Mặc định ẩn bớt "VOMS đã đóng · chờ CCTS" cho gọn — bấm chip là hiện ngay
-  // trên chính bảng này, không cần đổi trang/tab nào khác.
-  let rows=base.filter(t=>vomsClosed(t)?CHIP.vclosed:true);
-  if(CHIP.over||CHIP.soon||CHIP.act){
-    rows=rows.filter(t=>(CHIP.over&&t.overdue)||(CHIP.soon&&!t.overdue&&t.remain_min!=null&&t.remain_min<=720)||(CHIP.act&&t.flag_level==='action'));
+  // Cả 4 chip hoạt động GIỐNG NHAU: không bấm gì -> mặc định chỉ hiện ticket
+  // đang xử lý (ẩn bớt "VOMS đã đóng" cho gọn). Bấm 1 hoặc nhiều chip -> CHỈ
+  // hiện đúng những ticket khớp ít nhất 1 chip đang bật (không còn lẫn loại khác).
+  let rows;
+  if(CHIP.over||CHIP.soon||CHIP.act||CHIP.vclosed){
+    rows=base.filter(t=>(CHIP.over&&t.overdue)||(CHIP.soon&&!t.overdue&&t.remain_min!=null&&t.remain_min<=720)||(CHIP.act&&t.flag_level==='action')||(CHIP.vclosed&&vomsClosed(t)));
+  }else{
+    rows=base.filter(t=>!vomsClosed(t));
   }
   FILTERED_KEYS=rows.map(t=>t.rc_key);
   const chip=(key,cls,label,n)=>'<div class="chip '+cls+(CHIP[key]?' selected':'')+'" onclick="toggleChip(\''+key+'\')">'+label+' <b>'+n+'</b></div>';
